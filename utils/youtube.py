@@ -29,7 +29,9 @@ _COOKIES_PATH = "/app/cookies.txt"
 #   tv_embedded → Connected-TV embedded player; relaxed policy
 #   ios         → mobile fallback
 _YDL_BASE: dict[str, Any] = {
-    "format": "bestaudio/best",
+    # bestaudio* = 오디오 전용 스트림 우선, 없으면 비디오+오디오 혼합도 허용
+    # (web_creator 클라이언트는 bestaudio/best로 매칭 안 되는 포맷을 제공하는 경우 있음)
+    "format": "bestaudio*",
     "noplaylist": True,
     "quiet": True,
     "no_warnings": True,
