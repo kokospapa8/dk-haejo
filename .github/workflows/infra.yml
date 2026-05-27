@@ -1,0 +1,91 @@
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/**"
+  pull_request:
+    paths:
+      - "infra/**"
+  workflow_dispatch:    # 수동 실행 가능
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write  # PR에 Terraform plan 결과 코멘트
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── AWS OIDC 인증 ────────────────────────────────────────────────────────
+      # 주의: 첫 번째 실행은 로컬에서 bootstrap 후 진행
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ── Terraform 설치 ───────────────────────────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      # ── terraform init ───────────────────────────────────────────────────────
+      - name: Terraform Init
+        run: terraform init
+
+      # ── terraform validate ───────────────────────────────────────────────────
+      - name: Terraform Validate
+        run: terraform validate
+
+      # ── terraform plan (항상 실행) ───────────────────────────────────────────
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+            -no-color \
+            -out=tfplan 2>&1 | tee plan_output.txt
+        continue-on-error: true
+
+      # ── PR에 plan 결과 코멘트 ────────────────────────────────────────────────
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/plan_output.txt', 'utf8');
+            const truncated = plan.length > 60000 ? plan.slice(0, 60000) + '\n... (truncated)' : plan;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan\n\`\`\`hcl\n${truncated}\n\`\`\``
+            });
+
+      # ── terraform apply (main 브랜치 push 시만) ──────────────────────────────
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          terraform apply \
+            -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+            -auto-approve \
+            tfplan
+
+      # ── 출력값 표시 ─────────────────────────────────────────────────────────
+      - name: Show Outputs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: terraform output

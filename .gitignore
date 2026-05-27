@@ -16,3 +16,11 @@ venv/
 .idea/
 .vscode/
 *.swp
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/tfplan
+infra/terraform.tfvars   # 실제 값 포함 — 절대 커밋 금지
