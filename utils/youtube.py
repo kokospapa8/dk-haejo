@@ -18,8 +18,13 @@ _YDL_OPTIONS: dict[str, Any] = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
-    # Extract audio only (no video download)
     "extract_flat": False,
+    # ios 클라이언트: 서버 환경에서 YouTube 봇 감지 우회
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["ios", "web"],
+        }
+    },
 }
 
 # FFmpeg reconnect flags – important for long streams
