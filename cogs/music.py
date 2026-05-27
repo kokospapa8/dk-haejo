@@ -11,9 +11,10 @@ from typing import Optional
 
 import discord
 from discord.ext import commands
+from yt_dlp.utils import DownloadError
 
 from utils.music_queue import MusicQueue, RepeatMode, Song
-from utils.youtube import FFMPEG_OPTIONS, search_youtube
+from utils.youtube import FFMPEG_OPTIONS, get_stream_url, search_youtube
 
 log = logging.getLogger(__name__)
 
@@ -44,13 +45,35 @@ class Music(commands.Cog):
         return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
     async def _play_audio(self, guild: discord.Guild, song: Song) -> None:
-        """Start streaming *song* in the guild's voice channel."""
+        """Fetch a fresh stream URL then start playback in the guild's voice channel.
+
+        Stream URLs are fetched here (not at queue time) so they never expire
+        even if the song has been waiting in the queue for hours.
+        """
         vc = guild.voice_client
         if not vc:
             return
 
+        # Fetch a fresh stream URL right before playback
+        try:
+            stream_url = await get_stream_url(song.webpage_url)
+        except DownloadError as exc:
+            log.error("Stream URL fetch failed for %r: %s", song.title, exc)
+            ch = self._text_channels.get(guild.id)
+            if ch:
+                await ch.send(
+                    f"⚠️ **{song.title}** 스트림 URL을 가져오지 못했습니다. "
+                    "다음 곡으로 넘어갑니다."
+                )
+            await self._play_next(guild)
+            return
+        except Exception as exc:
+            log.exception("Unexpected error fetching stream URL for %r", song.title)
+            await self._play_next(guild)
+            return
+
         queue = self._get_queue(guild.id)
-        source = discord.FFmpegPCMAudio(song.url, **FFMPEG_OPTIONS)
+        source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
         source = discord.PCMVolumeTransformer(source, volume=queue.volume)
 
         def _after(error: Optional[Exception]) -> None:
@@ -138,9 +161,9 @@ class Music(commands.Cog):
             if not ok:
                 return msg
 
-        # Fetch song info from YouTube (runs in thread pool)
+        # Search YouTube for metadata (fast — no stream URL fetched yet)
         try:
-            info = await search_youtube(query)
+            meta = await search_youtube(query)
         except Exception as exc:
             log.exception("YouTube search failed for query %r", query)
             err = str(exc)
@@ -167,17 +190,17 @@ class Music(commands.Cog):
                 return f"❌ **{query}** — 해당 영상을 재생할 수 없습니다 (지역 제한 또는 삭제된 영상)."
             if "Private video" in err:
                 return "❌ 비공개 영상은 재생할 수 없습니다."
-            # 그 외 에러: 짧게 요약해서 보여줌
             short = err.split("\n")[0][:200]
             return f"❌ 검색 실패: {short}"
 
+        # Build Song — no stream URL stored; fetched fresh in _play_audio()
         song = Song(
-            title=info["title"],
-            url=info["url"],
-            webpage_url=info["webpage_url"],
-            duration=info["duration"],
-            thumbnail=info.get("thumbnail"),
+            title=meta["title"],
+            webpage_url=meta["webpage_url"],
+            duration=meta["duration"],
+            thumbnail=meta.get("thumbnail"),
             requested_by=member.display_name,
+            video_id=meta.get("video_id", ""),
         )
         queue = self._get_queue(guild.id)
         vc = guild.voice_client

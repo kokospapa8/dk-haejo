@@ -1,14 +1,27 @@
 """
 yt-dlp wrapper – async-safe YouTube audio extraction.
 
-Bot-detection bypass strategy (EC2, 2025+):
-  1. ios client + cookies  — iOS client uses cookies natively; no PO token needed.
-  2. web client + PO token — bgutil-ytdlp-pot-provider sidecar (localhost:4416)
+Two-phase design:
+  search_youtube(query)  → fast metadata (title, duration, thumbnail, webpage_url)
+                           uses extract_flat=True, no format selection, no EJS needed
+  get_stream_url(url)    → actual audio stream URL, called right before playback
+                           uses EJS + ios/tv_embedded clients with cookies
 
-  If YouTube returns only DRM/SABR formats (→ "Requested format is not available"),
-  set LOG_YTDLP_VERBOSE=1 in the environment to dump the full yt-dlp debug log.
+Why two phases?
+  YouTube stream URLs expire in ~6 hours. Fetching the stream URL only at
+  play time ensures queued songs never hit 403 errors.
 
-  Ref: https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+Bot-detection bypass (EC2, 2025+):
+  - ios client + cookies: progressive m4a, no SABR, no PO token needed
+  - tv_embedded fallback: embedded client, no SABR
+  - EJS (External JavaScript): signature/n-challenge solver scripts downloaded
+    from GitHub and cached in ~/.cache/yt-dlp/. Pre-cached in Dockerfile.
+  - bgutil-ytdlp-pot-provider sidecar (localhost:4416): PO token injector
+    installed as yt-dlp plugin via pip (auto-active, no config needed)
+
+  web_safari is excluded: it forces SABR streaming which has no direct URL.
+
+Set LOG_YTDLP_VERBOSE=1 to dump full yt-dlp debug log.
 """
 from __future__ import annotations
 
@@ -23,39 +36,57 @@ import yt_dlp
 
 log = logging.getLogger(__name__)
 
-# Set LOG_YTDLP_VERBOSE=1 to print full yt-dlp debug output — useful when
-# diagnosing "Requested format is not available" / DRM-only format issues.
 _VERBOSE = os.getenv("LOG_YTDLP_VERBOSE", "0") == "1"
-
 _COOKIES_PATH = "/app/cookies.txt"
 
-_YDL_BASE: dict[str, Any] = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
+# ── shared base options ───────────────────────────────────────────────────────
+
+_COMMON: dict[str, Any] = {
     "quiet": not _VERBOSE,
     "no_warnings": not _VERBOSE,
     "verbose": _VERBOSE,
-    "default_search": "ytsearch",
+    "noplaylist": True,
     "source_address": "0.0.0.0",
+}
+
+# ── search options (flat, fast, no format selection) ─────────────────────────
+
+_SEARCH_OPTS: dict[str, Any] = {
+    **_COMMON,
+    "extract_flat": True,         # return entry metadata only, no stream URL fetch
+    "default_search": "ytsearch",
+}
+
+# ── playback options (full extraction, format selection, EJS) ─────────────────
+
+_PLAY_OPTS: dict[str, Any] = {
+    **_COMMON,
+    # webm/opus: Discord-native codec, no transcoding overhead → 1순위
+    # m4a/aac:   high quality fallback → 2순위
+    # bestaudio: any audio-only stream → 3순위
+    # best:      combined audio+video fallback → 4순위
+    "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
     "extract_flat": False,
-    # EJS(External JavaScript) challenge solver 스크립트를 GitHub에서 자동 다운로드.
-    # Deno 런타임이 있어도 EJS 스크립트 없으면 signature/n-challenge 못 풀어서
-    # storyboard 이미지만 반환됨. 첫 실행 후 ~/.cache/yt-dlp/ 에 캐시됨.
+    # EJS challenge solver scripts — pre-cached in Dockerfile, auto-updated if stale
     "remote_components": ["ejs:github"],
     "extractor_args": {
         "youtube": {
-            # ios: 쿠키 직접 사용, progressive m4a 스트림, SABR 없음 → 1순위
+            # ios: 쿠키 직접 사용, progressive m4a, SABR 없음 → 1순위
             # tv_embedded: 임베디드 클라이언트, SABR 미적용 → 2순위
-            # web_safari 제외: SABR 강제 적용됨
+            # web_safari 제외: SABR 강제 (direct URL 없음)
             "player_client": ["ios", "tv_embedded"],
         }
     },
 }
 
-# FFmpeg reconnect flags – important for long streams
+# FFmpeg reconnect flags – critical for HTTP audio streams
 FFMPEG_OPTIONS: dict[str, str] = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn",
+    "before_options": (
+        "-reconnect 1 -reconnect_streamed 1 "
+        "-reconnect_delay_max 5 "
+        "-nostdin"
+    ),
+    "options": "-vn -loglevel warning",
 }
 
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -71,84 +102,96 @@ class _YtdlpLogger:
         log.error("[yt-dlp] %s", msg)
 
 
-# ── public API ────────────────────────────────────────────────────────────────
-
-async def search_youtube(query: str) -> dict[str, Any]:
-    """Return song info dict for *query* (title / URL / duration / thumbnail).
-
-    Runs in a thread pool to avoid blocking the event loop.
-    """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _extract_sync, query)
-
-
-def _extract_sync(query: str) -> dict[str, Any]:
-    options: dict[str, Any] = copy.deepcopy(_YDL_BASE)
-
+def _apply_cookies(options: dict[str, Any]) -> None:
+    """Attach cookiefile to options dict if the file exists and is non-empty."""
     if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0:
         options["cookiefile"] = _COOKIES_PATH
-        log.info("yt-dlp: cookies loaded from %s (size=%d B)",
-                 _COOKIES_PATH, os.path.getsize(_COOKIES_PATH))
+        log.info("yt-dlp: cookies loaded (%d B)", os.path.getsize(_COOKIES_PATH))
     else:
         log.warning(
-            "yt-dlp: cookies.txt not found or empty at %s — "
-            "DRM-only formats likely; upload fresh cookies",
+            "yt-dlp: cookies.txt missing or empty at %s — "
+            "DRM-only formats likely; please upload fresh cookies",
             _COOKIES_PATH,
         )
 
+
+# ── public API ────────────────────────────────────────────────────────────────
+
+async def search_youtube(query: str) -> dict[str, Any]:
+    """Search YouTube and return song metadata (no stream URL).
+
+    Fast — uses extract_flat so no format selection or signature solving needed.
+    Returns: {title, video_id, webpage_url, duration, thumbnail}
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _search_sync, query)
+
+
+async def get_stream_url(webpage_url: str) -> str:
+    """Extract a fresh audio stream URL for *webpage_url*.
+
+    Call this right before playback — YouTube stream URLs expire in ~6 hours.
+    Raises yt_dlp.utils.DownloadError on failure.
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _stream_sync, webpage_url)
+
+
+# ── sync implementations (run in thread pool) ─────────────────────────────────
+
+def _search_sync(query: str) -> dict[str, Any]:
+    opts = copy.deepcopy(_SEARCH_OPTS)
+    _apply_cookies(opts)
     if _VERBOSE:
-        options["logger"] = _YtdlpLogger()
+        opts["logger"] = _YtdlpLogger()
 
-    # ── Step 1: flat search → get video URL without triggering format selection ──
-    # Using extract_flat avoids "Requested format is not available" errors during
-    # the ytsearch playlist processing phase.
-    if not query.startswith("http"):
-        flat_opts = copy.deepcopy(options)
-        flat_opts["extract_flat"] = True
-        flat_opts.pop("format", None)
+    search_query = query if query.startswith("http") else f"ytsearch:{query}"
 
-        with yt_dlp.YoutubeDL(flat_opts) as ydl:
-            search_info = ydl.extract_info(f"ytsearch:{query}", download=False)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        result = ydl.extract_info(search_query, download=False)
 
-        if not search_info or not search_info.get("entries"):
-            raise ValueError(f"검색 결과 없음: {query!r}")
+    # ytsearch returns a playlist wrapper; unwrap first entry
+    if result and "entries" in result:
+        result = result["entries"][0]
 
-        entry = search_info["entries"][0]
-        # Prefer webpage_url (full canonical URL) over the plain id
-        video_url = (
-            entry.get("webpage_url")
-            or entry.get("url")
-            or f"https://www.youtube.com/watch?v={entry['id']}"
-        )
-        log.info("yt-dlp: search hit → %s (%s)", entry.get("title", "?"), video_url)
-    else:
-        video_url = query
+    if not result:
+        raise ValueError(f"검색 결과 없음: {query!r}")
 
-    # ── Step 2: full extraction → format selection on the specific video URL ──
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(video_url, download=False)
+    video_id = result.get("id", "")
+    webpage_url = (
+        result.get("webpage_url")
+        or result.get("url")
+        or f"https://www.youtube.com/watch?v={video_id}"
+    )
+    log.info("yt-dlp: search → %s  [%s]", result.get("title", "?"), video_id)
 
-        # In rare cases extract_info still wraps result in a playlist
-        if "entries" in info:
+    return {
+        "title": result.get("title", "Unknown"),
+        "video_id": video_id,
+        "webpage_url": webpage_url,
+        "duration": result.get("duration") or 0,
+        "thumbnail": result.get("thumbnail"),
+    }
+
+
+def _stream_sync(webpage_url: str) -> str:
+    opts = copy.deepcopy(_PLAY_OPTS)
+    _apply_cookies(opts)
+    if _VERBOSE:
+        opts["logger"] = _YtdlpLogger()
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(webpage_url, download=False)
+        if info and "entries" in info:
             info = info["entries"][0]
 
-        formats = info.get("formats", [])
-        audio_fmts = [f for f in formats if f.get("acodec") not in (None, "none")]
-        log.info(
-            "yt-dlp: %s — %d formats total, %d with audio",
-            info.get("title", "?"), len(formats), len(audio_fmts),
-        )
-        if not audio_fmts:
-            # Log all format IDs/codecs so we can diagnose DRM vs storyboard
-            log.warning(
-                "yt-dlp: no audio formats found — available format_ids: %s",
-                [f.get("format_id") for f in formats[:20]],
-            )
+    stream_url: str = info["url"]
 
-        return {
-            "title": info["title"],
-            "url": info["url"],               # audio stream URL
-            "webpage_url": info["webpage_url"],
-            "duration": info.get("duration", 0),
-            "thumbnail": info.get("thumbnail"),
-        }
+    # Diagnostic: log selected format
+    fmt = info.get("format", "?")
+    abr = info.get("abr") or info.get("tbr") or "?"
+    log.info(
+        "yt-dlp: stream URL ready — %s | format=%s abr=%skbps",
+        info.get("title", "?"), fmt, abr,
+    )
+    return stream_url

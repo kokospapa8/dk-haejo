@@ -18,11 +18,13 @@ class RepeatMode(Enum):
 @dataclass
 class Song:
     title: str
-    url: str           # direct audio stream URL (yt-dlp extracted)
-    webpage_url: str   # original YouTube URL
+    webpage_url: str   # permanent YouTube page URL — used to fetch stream at play time
     duration: int      # seconds
     thumbnail: Optional[str]
     requested_by: str  # Discord display name
+    video_id: str = ""
+    # Stream URL is NOT stored here — it is fetched fresh in _play_audio()
+    # so queued songs never hit 403 "stream URL expired" errors (~6 h TTL).
 
 
 class MusicQueue:
