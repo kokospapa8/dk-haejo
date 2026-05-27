@@ -37,13 +37,11 @@ _YDL_BASE: dict[str, Any] = {
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extract_flat": False,
-    # Node.js로 YouTube 서명(n-function) 복호화
-    # 형식: {runtime_name: {config}} — 빈 dict는 기본 경로 자동 탐색
-    "js_runtimes": {"node": {}},
     "extractor_args": {
         "youtube": {
-            # web = 가장 많은 포맷 제공, 쿠키 인증으로 bot check 통과
-            "player_client": ["web", "tv_embedded", "ios"],
+            # android = InnerTube API로 pre-signed URL 반환 → n-function JS 복호화 불필요
+            # web / tv_embedded = 폴백 (android 실패 시)
+            "player_client": ["android", "web", "tv_embedded"],
         }
     },
 }
