@@ -148,17 +148,24 @@ resource "aws_instance" "bot" {
     #!/bin/bash
     set -e
     apt-get update -y
-    apt-get install -y docker.io docker-compose-plugin git curl unzip
+    apt-get install -y ca-certificates curl gnupg git
 
-    # Docker 서비스 시작
+    # Docker 공식 저장소 추가 (ubuntu 기본 repo에는 compose plugin 없음)
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+      | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    apt-get update -y
+    apt-get install -y docker-ce docker-ce-cli containerd.io \
+      docker-buildx-plugin docker-compose-plugin
+
     systemctl enable docker
     systemctl start docker
     usermod -aG docker ubuntu
-
-    # AWS SSM 에이전트 (Ubuntu 22.04에 포함되어 있지만 확인)
-    systemctl enable amazon-ssm-agent 2>/dev/null || \
-      snap install amazon-ssm-agent --classic && \
-      systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
 
     echo "✅ 초기 설정 완료" >> /var/log/user-data.log
   EOF
