@@ -1,14 +1,18 @@
 """
 yt-dlp wrapper – async-safe YouTube audio extraction.
 
-Bot-detection bypass strategy (2025, EC2):
-  YouTube requires a Proof-of-Origin (PO) token for non-browser clients on
-  cloud IPs.  We use the bgutil-ytdlp-pot-provider sidecar (localhost:4416)
-  + yt-dlp-get-pot plugin to inject PO tokens automatically so the `web`
-  client works.  Cookies are still passed for age-restricted content.
+Bot-detection bypass strategy (EC2, 2025+):
+  1. ios client + cookies  — iOS client uses cookies natively; no PO token needed.
+     Works when the cookie session is valid.  Try this first.
+  2. web client + PO token — bgutil-ytdlp-pot-provider sidecar (localhost:4416)
+     auto-injects Proof-of-Origin tokens so YouTube accepts the web client.
+     Fallback when ios is blocked.
+
+  Without proper auth YouTube returns only DRM/SABR streams, which yt-dlp
+  excludes from format selection → "Requested format is not available".
+  Valid cookies (or a PO token) give back real audio streams.
 
   Ref: https://github.com/Brainicism/bgutil-ytdlp-pot-provider
-       https://github.com/coletdjnz/yt-dlp-get-pot
 """
 from __future__ import annotations
 
@@ -27,11 +31,8 @@ log = logging.getLogger(__name__)
 
 _COOKIES_PATH = "/app/cookies.txt"
 
-# PO Token provider endpoint (bgutil-ytdlp-pot-provider sidecar).
-# On EC2 with host-networked Discord bot, the sidecar is reachable via loopback.
 _YDL_BASE: dict[str, Any] = {
-    # bestaudio/best: 오디오 전용 스트림 우선, 없으면 최고 품질 전체 스트림
-    # (bestaudio* 는 web 클라이언트 반환 포맷과 호환 안 되는 경우 있음)
+    # bestaudio/best: 오디오 전용 스트림 우선, 없으면 최고 품질 스트림
     "format": "bestaudio/best",
     "noplaylist": True,
     "quiet": True,
@@ -41,10 +42,9 @@ _YDL_BASE: dict[str, Any] = {
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
-            # web 클라이언트 + PO 토큰: EC2 등 클라우드 IP에서도 YouTube 우회 가능
-            # bgutil-ytdlp-pot-provider 플러그인이 localhost:4416 사이드카에서
-            # 자동으로 토큰을 받아와서 주입함 (extractor_args에 po_token 불필요)
-            "player_client": ["web"],
+            # ios 클라이언트: 쿠키를 직접 사용, PO 토큰 불필요, non-DRM 포맷 반환
+            # web 클라이언트: bgutil 사이드카가 PO 토큰 자동 주입 (폴백)
+            "player_client": ["ios", "web"],
         }
     },
 }
@@ -82,7 +82,7 @@ def _extract_sync(query: str) -> dict[str, Any]:
     else:
         log.warning(
             "yt-dlp: cookies.txt not found or empty at %s — "
-            "age-restricted content may fail; PO token provider still active",
+            "DRM-only formats likely; try uploading fresh cookies",
             _COOKIES_PATH,
         )
 
@@ -94,6 +94,17 @@ def _extract_sync(query: str) -> dict[str, Any]:
         # If it's a search result, take the first entry
         if "entries" in info:
             info = info["entries"][0]
+
+        # Diagnostic: log available format count so we can tell DRM-only vs real
+        formats = info.get("formats", [])
+        audio_fmts = [f for f in formats if f.get("acodec") not in (None, "none")]
+        log.debug(
+            "yt-dlp: %s — %d total formats, %d with audio (video_id=%s)",
+            info.get("title", "?"),
+            len(formats),
+            len(audio_fmts),
+            info.get("id", "?"),
+        )
 
         return {
             "title": info["title"],
