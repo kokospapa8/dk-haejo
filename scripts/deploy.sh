@@ -54,11 +54,10 @@ if [ ! -d "$REPO/.git" ]; then
 fi
 
 cd "$REPO"
-# SSM runs as root; fix ownership so git doesn't reject the repo
+# SSM runs as root without $HOME; fix ownership and use inline safe.directory
 chown -R ubuntu:ubuntu "$REPO"
-git config --global --add safe.directory "$REPO"
-git fetch origin main
-git reset --hard origin/main
+git -c safe.directory="$REPO" fetch origin main
+git -c safe.directory="$REPO" reset --hard origin/main
 
 # cookies.txt 없으면 빈 파일 생성 (Docker 마운트 오류 방지)
 touch "$REPO/cookies.txt"
