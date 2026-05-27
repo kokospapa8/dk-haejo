@@ -21,6 +21,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-cache EJS challenge solver scripts from GitHub so the bot doesn't
+# need to hit GitHub on first playback at runtime.
+# Uses Rick Astley as a harmless probe video; `|| true` so a transient
+# network error during build doesn't break the image.
+RUN yt-dlp --remote-components ejs:github \
+    --skip-download --print id \
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ" || true
+
 COPY . .
 
 CMD ["python", "-u", "bot.py"]

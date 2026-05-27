@@ -38,13 +38,16 @@ _YDL_BASE: dict[str, Any] = {
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extract_flat": False,
+    # EJS(External JavaScript) challenge solver 스크립트를 GitHub에서 자동 다운로드.
+    # Deno 런타임이 있어도 EJS 스크립트 없으면 signature/n-challenge 못 풀어서
+    # storyboard 이미지만 반환됨. 첫 실행 후 ~/.cache/yt-dlp/ 에 캐시됨.
+    "remote_components": ["ejs:github"],
     "extractor_args": {
         "youtube": {
-            # ios: 쿠키 직접 사용, signature 불필요 → 우선 시도
-            # tv_embedded: 임베디드 클라이언트, SABR 미적용
-            # web: bgutil PO 토큰 자동 주입 (폴백)
-            # web_safari는 SABR 강제 적용되므로 제외
-            "player_client": ["ios", "tv_embedded", "web"],
+            # ios: 쿠키 직접 사용, progressive m4a 스트림, SABR 없음 → 1순위
+            # tv_embedded: 임베디드 클라이언트, SABR 미적용 → 2순위
+            # web_safari 제외: SABR 강제 적용됨
+            "player_client": ["ios", "tv_embedded"],
         }
     },
 }
