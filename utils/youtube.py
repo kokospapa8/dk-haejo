@@ -38,7 +38,10 @@ _YDL_BASE: dict[str, Any] = {
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
+            # web_creator = YouTube Studio API; fewer bot-checks on cloud IPs
+            # player_skip = skip JS webpage fetch (main trigger for bot detection)
             "player_client": ["web_creator", "tv_embedded", "ios"],
+            "player_skip": ["webpage", "configs"],
         }
     },
 }
