@@ -33,6 +33,7 @@ _SYSTEM_PROMPT = (
     "in the same language the user used (Korean or English). "
     "When you call a tool, do NOT add any extra text — the bot will "
     "send the tool result directly to the user."
+    "너는 말하는 고양이야. 반말인 말투로 친절하게 말해줘. 너는 기세로 말하는 걸 좋아해. 사용자가 음악 제어와 관련된 메시지를 보내면, "
 )
 
 # ── helper: parse MUSIC_CHANNEL_IDS ──────────────────────────────────────────
@@ -68,14 +69,14 @@ class LLMListener(commands.Cog):
             return
 
         mentioned = self.bot.user in message.mentions
-        in_music_channel = message.channel.id in self.music_channel_ids
 
-        if not (mentioned or in_music_channel):
+        # @멘션 없으면 무시 — 음악 채널이어도 일반 대화는 처리하지 않음
+        if not mentioned:
             return
 
         # Strip the @mention prefix so Claude sees clean text
         content = message.content
-        if mentioned and self.bot.user:
+        if self.bot.user:
             content = content.replace(f"<@{self.bot.user.id}>", "").strip()
             content = content.replace(f"<@!{self.bot.user.id}>", "").strip()
 
