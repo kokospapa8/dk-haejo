@@ -5,12 +5,11 @@ on:
     branches:
       - main
     paths-ignore:
-      - "infra/**"       # 인프라 변경은 infra.yml이 담당
+      - "infra/**"
       - "**.md"
 
 permissions:
   contents: read
-  # id-token: write  ← OIDC 방식으로 전환 시 활성화
 
 jobs:
   deploy:
@@ -18,77 +17,96 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ── 1. AWS 인증 (IAM 사용자 Access Key) ────────────────────────────────
-      - name: Configure AWS credentials (Access Key)
+      # ── 1. AWS 인증 ──────────────────────────────────────────────────────────
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # ── 2. EC2에 .env 파일 최신화 (SSM) ────────────────────────────────────
+      # ── 2. .env 동기화 ───────────────────────────────────────────────────────
+      # base64로 인코딩 후 전달 → 특수문자/이스케이프 문제 완전 회피
       - name: Sync .env to EC2 via SSM
         run: |
+          ENV_B64=$(printf '%s\n' \
+            "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" \
+            "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" \
+            "CLAUDE_MODEL=${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}" \
+            "MUSIC_CHANNEL_IDS=${{ secrets.MUSIC_CHANNEL_IDS }}" \
+            | base64 -w0)
+
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters commands="[
+            --parameters "commands=[
               \"mkdir -p /home/ubuntu/dk-haejo\",
-              \"printf 'DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}\nANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nCLAUDE_MODEL=${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}\nMUSIC_CHANNEL_IDS=${{ secrets.MUSIC_CHANNEL_IDS }}\n' > /home/ubuntu/dk-haejo/.env\"
+              \"echo ${ENV_B64} | base64 -d > /home/ubuntu/dk-haejo/.env\",
+              \"echo .env synced\"
             ]" \
-            --comment "sync .env" \
+            --comment "sync-env" \
             --query "Command.CommandId" --output text)
 
-          echo "env_cmd_id=$CMD_ID" >> $GITHUB_ENV
-
-          # 완료 대기
           for i in $(seq 1 12); do
-            STATUS=$(aws ssm get-command-invocation \
+            S=$(aws ssm get-command-invocation \
               --command-id "$CMD_ID" \
               --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
               --query "Status" --output text 2>/dev/null || echo "Pending")
-            [ "$STATUS" = "Success" ] && break
-            [ "$STATUS" = "Failed"  ] && { echo "❌ .env 동기화 실패"; exit 1; }
+            [ "$S" = "Success" ] && { echo "✅ .env 동기화 완료"; break; }
+            [ "$S" = "Failed"  ] && { echo "❌ .env 동기화 실패"; exit 1; }
             sleep 5
           done
 
-      # ── 3. 코드 Pull + Docker 재빌드 (SSM) ─────────────────────────────────
+      # ── 3. 코드 Pull + Docker 재빌드 ─────────────────────────────────────────
+      # 스크립트를 base64로 인코딩 → SSM에 단일 문자열로 전달 → EC2에서 디코딩 실행
       - name: Deploy via SSM
         id: deploy
         run: |
-          REPO="/home/ubuntu/dk-haejo"
+          DEPLOY_SCRIPT_B64=$(base64 -w0 << 'BASH_EOF'
+          #!/bin/bash
+          set -e
+          REPO=/home/ubuntu/dk-haejo
+
+          # 디렉토리가 있지만 .git이 없으면 (이전 실패 잔재) 삭제
+          if [ -d "$REPO" ] && [ ! -d "$REPO/.git" ]; then
+            echo "잔여 디렉토리 정리: $REPO"
+            rm -rf "$REPO"
+          fi
+
+          # 최초 클론
+          if [ ! -d "$REPO/.git" ]; then
+            git clone https://github.com/kokospapa8/dk-haejo.git "$REPO"
+          fi
+
+          cd "$REPO"
+          git fetch origin main
+          git reset --hard origin/main
+
+          docker compose up -d --build --remove-orphans 2>&1
+          docker image prune -f
+
+          echo "✅ 배포 완료: $(date)"
+          BASH_EOF
+          )
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters commands="[
-              \"set -e\",
-              \"REPO=$REPO\",
-              \"# 디렉토리가 있지만 git repo가 아니면 삭제 후 클론\",
-              \"if [ -d \\\$REPO ] && [ ! -d \\\$REPO/.git ]; then rm -rf \\\$REPO; fi\",
-              \"# 없으면 클론\",
-              \"if [ ! -d \\\$REPO/.git ]; then git clone https://github.com/kokospapa8/dk-haejo.git \\\$REPO; fi\",
-              \"cd \\\$REPO\",
-              \"git fetch origin main\",
-              \"git reset --hard origin/main\",
-              \"docker compose up -d --build --remove-orphans 2>&1\",
-              \"docker image prune -f\",
-              \"echo '✅ 배포 완료'\"
-            ]" \
-            --comment "deploy ${{ github.sha }}" \
+            --parameters "commands=[\"echo ${DEPLOY_SCRIPT_B64} | base64 -d | bash\"]" \
+            --comment "deploy-${{ github.sha }}" \
             --query "Command.CommandId" \
             --output text)
 
           echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
           echo "SSM Command ID: $COMMAND_ID"
 
-      # ── 4. 배포 완료 대기 및 로그 출력 ──────────────────────────────────────
+      # ── 4. 완료 대기 및 로그 출력 ────────────────────────────────────────────
       - name: Wait for deployment
         run: |
           COMMAND_ID="${{ steps.deploy.outputs.command_id }}"
           INSTANCE_ID="${{ secrets.EC2_INSTANCE_ID }}"
 
-          echo "SSM 명령 완료 대기 중..."
+          echo "배포 완료 대기 중..."
           for i in $(seq 1 30); do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
@@ -105,7 +123,7 @@ jobs:
                 --query "StandardOutputContent" --output text
               exit 0
             elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "TimedOut" ] || [ "$STATUS" = "Cancelled" ]; then
-              echo "❌ 배포 실패!"
+              echo "❌ 배포 실패! 에러 로그:"
               aws ssm get-command-invocation \
                 --command-id "$COMMAND_ID" \
                 --instance-id "$INSTANCE_ID" \
