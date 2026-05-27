@@ -17,6 +17,8 @@ from utils.youtube import FFMPEG_OPTIONS, search_youtube
 
 log = logging.getLogger(__name__)
 
+_IDLE_TIMEOUT = 5 * 60  # 5분 동안 음악 없으면 자동 퇴장 (초)
+
 
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -24,6 +26,8 @@ class Music(commands.Cog):
         self._queues: dict[int, MusicQueue] = {}  # guild_id → MusicQueue
         # 명령어를 받은 텍스트 채널 저장 → 재생 중 에러 발생 시 알림용
         self._text_channels: dict[int, discord.TextChannel] = {}
+        # 유휴 타임아웃 태스크 (guild_id → Task)
+        self._idle_tasks: dict[int, asyncio.Task] = {}
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -52,7 +56,6 @@ class Music(commands.Cog):
         def _after(error: Optional[Exception]) -> None:
             if error:
                 log.error("Playback error in guild %s: %s", guild.id, error)
-                # 텍스트 채널에 에러 알림
                 ch = self._text_channels.get(guild.id)
                 if ch:
                     asyncio.run_coroutine_threadsafe(
@@ -61,6 +64,7 @@ class Music(commands.Cog):
                     )
             asyncio.run_coroutine_threadsafe(self._play_next(guild), self.bot.loop)
 
+        self._cancel_idle_timer(guild.id)  # 재생 시작 → 타이머 취소
         vc.play(source, after=_after)
 
     async def _play_next(self, guild: discord.Guild) -> None:
@@ -69,6 +73,38 @@ class Music(commands.Cog):
         next_song = await queue.next()
         if next_song:
             await self._play_audio(guild, next_song)
+        else:
+            # 큐 소진 → 유휴 타임아웃 시작
+            self._start_idle_timer(guild)
+
+    # ── idle timeout ──────────────────────────────────────────────────────────
+
+    def _start_idle_timer(self, guild: discord.Guild) -> None:
+        """Start (or restart) the idle-leave timer for this guild."""
+        self._cancel_idle_timer(guild.id)
+        task = asyncio.ensure_future(self._idle_leave(guild))
+        self._idle_tasks[guild.id] = task
+
+    def _cancel_idle_timer(self, guild_id: int) -> None:
+        task = self._idle_tasks.pop(guild_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _idle_leave(self, guild: discord.Guild) -> None:
+        """Wait _IDLE_TIMEOUT seconds then leave if still idle."""
+        await asyncio.sleep(_IDLE_TIMEOUT)
+        vc = guild.voice_client
+        if not vc:
+            return
+        # 타임아웃 시점에도 재생 중이 아니면 퇴장
+        if not vc.is_playing() and not vc.is_paused():
+            log.info("Idle timeout — leaving voice in guild %s", guild.id)
+            queue = self._get_queue(guild.id)
+            queue.clear()
+            await vc.disconnect()
+            ch = self._text_channels.get(guild.id)
+            if ch:
+                await ch.send("😴 5분 동안 음악이 없어서 음성 채널을 나갔습니다.")
 
     # ── public methods (called by LLM listener) ───────────────────────────────
 
@@ -171,7 +207,9 @@ class Music(commands.Cog):
             return "⚠️ 봇이 음성 채널에 없습니다."
         queue = self._get_queue(guild.id)
         queue.clear()
+        self._cancel_idle_timer(guild.id)
         vc.stop()
+        self._start_idle_timer(guild)  # 정지 후 5분 타이머 시작
         return "⏹ 재생을 멈추고 큐를 비웠습니다."
 
     def view_queue(self, guild: discord.Guild) -> discord.Embed:
@@ -255,6 +293,7 @@ class Music(commands.Cog):
             return "⚠️ 봇이 음성 채널에 없습니다."
         queue = self._get_queue(guild.id)
         queue.clear()
+        self._cancel_idle_timer(guild.id)
         await vc.disconnect()
         return "👋 음성 채널에서 나갔습니다."
 
