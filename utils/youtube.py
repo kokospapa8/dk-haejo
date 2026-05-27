@@ -30,8 +30,9 @@ _COOKIES_PATH = "/app/cookies.txt"
 # PO Token provider endpoint (bgutil-ytdlp-pot-provider sidecar).
 # On EC2 with host-networked Discord bot, the sidecar is reachable via loopback.
 _YDL_BASE: dict[str, Any] = {
-    # bestaudio* = 오디오 전용 스트림 우선, 없으면 비디오+오디오 혼합도 허용
-    "format": "bestaudio*",
+    # bestaudio/best: 오디오 전용 스트림 우선, 없으면 최고 품질 전체 스트림
+    # (bestaudio* 는 web 클라이언트 반환 포맷과 호환 안 되는 경우 있음)
+    "format": "bestaudio/best",
     "noplaylist": True,
     "quiet": True,
     "no_warnings": True,
