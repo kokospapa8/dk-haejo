@@ -3,7 +3,7 @@ services:
   # client works on cloud IPs where YouTube blocks headless requests.
   # See: https://github.com/Brainicism/bgutil-ytdlp-pot-provider
   bgutil-provider:
-    image: ghcr.io/brainicism/bgutil-ytdlp-pot-provider:latest
+    image: brainicism/bgutil-ytdlp-pot-provider
     restart: unless-stopped
     ports:
       # Expose on loopback so the host-networked bot can reach localhost:4416

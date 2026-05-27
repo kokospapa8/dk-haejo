@@ -29,8 +29,6 @@ _COOKIES_PATH = "/app/cookies.txt"
 
 # PO Token provider endpoint (bgutil-ytdlp-pot-provider sidecar).
 # On EC2 with host-networked Discord bot, the sidecar is reachable via loopback.
-_POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://localhost:4416/get_pot")
-
 _YDL_BASE: dict[str, Any] = {
     # bestaudio* = 오디오 전용 스트림 우선, 없으면 비디오+오디오 혼합도 허용
     "format": "bestaudio*",
@@ -43,9 +41,9 @@ _YDL_BASE: dict[str, Any] = {
     "extractor_args": {
         "youtube": {
             # web 클라이언트 + PO 토큰: EC2 등 클라우드 IP에서도 YouTube 우회 가능
-            # yt-dlp-get-pot 플러그인이 bgutil-provider에서 토큰을 자동으로 받아옴
+            # bgutil-ytdlp-pot-provider 플러그인이 localhost:4416 사이드카에서
+            # 자동으로 토큰을 받아와서 주입함 (extractor_args에 po_token 불필요)
             "player_client": ["web"],
-            "po_token": [f"web+{_POT_PROVIDER_URL}"],
         }
     },
 }
