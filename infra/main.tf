@@ -13,14 +13,13 @@ terraform {
   }
 
   # ── Terraform 상태 원격 저장 (S3) ──────────────────────────────────────────
-  # bootstrap.sh 실행 후 아래 주석 해제
-  # backend "s3" {
-  #   bucket         = "dk-haejo-tfstate-399932611745"
-  #   key            = "discord-bot/terraform.tfstate"
-  #   region         = "ap-northeast-2"
-  #   dynamodb_table = "dk-haejo-tfstate-lock"
-  #   encrypt        = true
-  # }
+  backend "s3" {
+    bucket       = "dk-haejo-tfstate-399932611745"
+    key          = "discord-bot/terraform.tfstate"
+    region       = "ap-northeast-2"
+    use_lockfile = true
+    encrypt      = true
+  }
 }
 
 provider "aws" {
@@ -44,10 +43,46 @@ data "aws_ami" "ubuntu" {
 
 data "aws_caller_identity" "current" {}
 
+# ── VPC (기본 VPC가 없는 계정용) ─────────────────────────────────────────────
+resource "aws_vpc" "bot" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+  tags                 = { Name = "dk-haejo-vpc" }
+}
+
+resource "aws_internet_gateway" "bot" {
+  vpc_id = aws_vpc.bot.id
+  tags   = { Name = "dk-haejo-igw" }
+}
+
+resource "aws_subnet" "bot" {
+  vpc_id                  = aws_vpc.bot.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "${var.aws_region}a"
+  map_public_ip_on_launch = true
+  tags                    = { Name = "dk-haejo-subnet" }
+}
+
+resource "aws_route_table" "bot" {
+  vpc_id = aws_vpc.bot.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.bot.id
+  }
+  tags = { Name = "dk-haejo-rt" }
+}
+
+resource "aws_route_table_association" "bot" {
+  subnet_id      = aws_subnet.bot.id
+  route_table_id = aws_route_table.bot.id
+}
+
 # ── Security Group ────────────────────────────────────────────────────────────
 resource "aws_security_group" "bot" {
   name        = "dk-haejo-bot-sg"
   description = "Discord music bot: outbound only"
+  vpc_id      = aws_vpc.bot.id
 
   # SSH (비상 접속용 — SSM이 기본, 필요 없으면 삭제 가능)
   ingress {
@@ -104,6 +139,7 @@ resource "aws_instance" "bot" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.bot.key_name
+  subnet_id              = aws_subnet.bot.id
   vpc_security_group_ids = [aws_security_group.bot.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2.name
 
