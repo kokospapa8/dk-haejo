@@ -40,7 +40,11 @@ _YDL_BASE: dict[str, Any] = {
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
-            "player_client": ["ios", "web"],
+            # ios: 쿠키 직접 사용, signature 불필요 → 우선 시도
+            # tv_embedded: 임베디드 클라이언트, SABR 미적용
+            # web: bgutil PO 토큰 자동 주입 (폴백)
+            # web_safari는 SABR 강제 적용되므로 제외
+            "player_client": ["ios", "tv_embedded", "web"],
         }
     },
 }
