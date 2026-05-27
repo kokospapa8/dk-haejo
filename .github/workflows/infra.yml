@@ -12,9 +12,9 @@ on:
   workflow_dispatch:    # 수동 실행 가능
 
 permissions:
-  id-token: write
   contents: read
   pull-requests: write  # PR에 Terraform plan 결과 코멘트
+  # id-token: write  ← OIDC 방식으로 전환 시 활성화
 
 jobs:
   terraform:
@@ -28,12 +28,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── AWS OIDC 인증 ────────────────────────────────────────────────────────
-      # 주의: 첫 번째 실행은 로컬에서 bootstrap 후 진행
-      - name: Configure AWS credentials (OIDC)
+      # ── AWS 인증 (IAM Access Key) ────────────────────────────────────────────
+      # TODO: OIDC 전환 시 아래로 교체
+      # - name: Configure AWS credentials (OIDC)
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      - name: Configure AWS credentials (Access Key)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       # ── Terraform 설치 ───────────────────────────────────────────────────────

@@ -9,8 +9,8 @@ on:
       - "**.md"
 
 permissions:
-  id-token: write   # OIDC 토큰 발급에 필요
   contents: read
+  # id-token: write  ← OIDC 방식으로 전환 시 활성화
 
 jobs:
   deploy:
@@ -18,11 +18,18 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ── 1. AWS OIDC 인증 (Access Key 없음) ─────────────────────────────────
-      - name: Configure AWS credentials (OIDC)
+      # ── 1. AWS 인증 (IAM 사용자 Access Key) ────────────────────────────────
+      # TODO: Terraform bootstrap 완료 후 아래 방식으로 교체 (OIDC, 키 불필요)
+      # - name: Configure AWS credentials (OIDC)
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      - name: Configure AWS credentials (Access Key)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       # ── 2. EC2에 .env 파일 최신화 (SSM) ────────────────────────────────────
