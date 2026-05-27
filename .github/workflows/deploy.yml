@@ -1,0 +1,56 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main        # main 브랜치에 푸시될 때만 실행
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── 1. 코드 체크아웃 (변경 여부 확인용) ─────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. EC2에 SSH 접속 후 배포 ────────────────────────────────────────────
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+
+            REPO_DIR="$HOME/dk-haejo"
+
+            # 최초 배포: 레포지토리가 없으면 클론
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              git clone https://github.com/kokospapa8/dk-haejo.git "$REPO_DIR"
+            fi
+
+            cd "$REPO_DIR"
+
+            # 최신 코드 가져오기
+            git fetch origin main
+            git reset --hard origin/main
+
+            # .env 파일이 없으면 경고 (최초 배포 시 수동으로 만들어야 함)
+            if [ ! -f .env ]; then
+              echo "❌ .env 파일이 없습니다. 아래 명령어로 먼저 생성하세요:"
+              echo "   cp .env.example .env && nano .env"
+              exit 1
+            fi
+
+            # Docker Compose로 재빌드 & 재시작
+            docker compose pull 2>/dev/null || true
+            docker compose up -d --build --remove-orphans
+
+            # 오래된 이미지 정리
+            docker image prune -f
+
+            echo "✅ 배포 완료: $(date)"

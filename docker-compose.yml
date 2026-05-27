@@ -1,0 +1,14 @@
+services:
+  discord-song-bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Discord voice requires UDP — host networking is the easiest option on EC2
+    network_mode: host
+    volumes:
+      # Optional: persist yt-dlp cache between restarts
+      - ytdlp_cache:/root/.cache/yt-dlp
+
+volumes:
+  ytdlp_cache:
