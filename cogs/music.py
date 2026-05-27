@@ -144,10 +144,24 @@ class Music(commands.Cog):
         except Exception as exc:
             log.exception("YouTube search failed for query %r", query)
             err = str(exc)
+
+            # 검색 실패 시 봇이 아무것도 재생 안 하고 있으면 즉시 퇴장
+            vc = guild.voice_client
+            if vc and not vc.is_playing() and not vc.is_paused():
+                queue = self._get_queue(guild.id)
+                if not queue.queue:  # 큐도 비어있으면 나감
+                    self._cancel_idle_timer(guild.id)
+                    await vc.disconnect()
+
             if "Sign in to confirm" in err or "not a bot" in err:
                 return (
                     "❌ YouTube가 봇으로 감지했습니다. "
                     "잠시 후 다시 시도하거나 관리자에게 문의해 주세요."
+                )
+            if "no longer supported" in err.lower():
+                return (
+                    "❌ YouTube 클라이언트 버전 문제가 발생했습니다. "
+                    "관리자에게 문의해 주세요."
                 )
             if "Video unavailable" in err or "not available" in err.lower():
                 return f"❌ **{query}** — 해당 영상을 재생할 수 없습니다 (지역 제한 또는 삭제된 영상)."

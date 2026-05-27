@@ -39,9 +39,10 @@ _YDL_BASE: dict[str, Any] = {
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
-            # web = 내부 인터프리터로 signature/n-function 복호화 (2024.12.13에서 작동)
-            # tv_embedded / ios = 폴백
-            "player_client": ["web", "tv_embedded", "ios"],
+            # web 클라이언트는 버전이 오래돼 YouTube에 차단됨 → 제외
+            # tv_embedded: 임베디드 플레이어, 봇 감지 낮음, 내부 인터프리터로 서명 복호화 가능
+            # ios: 모바일 폴백
+            "player_client": ["tv_embedded", "ios"],
         }
     },
 }
