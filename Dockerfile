@@ -1,11 +1,14 @@
 FROM python:3.11-slim
 
-# Install FFmpeg and build dependencies
+# Install FFmpeg, build dependencies, and Node.js (required by yt-dlp for
+# JavaScript evaluation — decrypts YouTube's n-function / player configs.
+# Without it, some videos return "Sign in to confirm you're not a bot".)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libopus0 \
     libffi-dev \
     libnacl-dev \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
