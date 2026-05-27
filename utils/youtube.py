@@ -2,12 +2,14 @@
 yt-dlp wrapper – async-safe YouTube audio extraction.
 
 Bot-detection bypass strategy (layered):
-  1. tv_embedded player client → no login required for most videos
-  2. cookies.txt (Netscape format) → checked at request time, not import time
+  1. web_creator player client — YouTube Studio client; cloud IPs get fewer restrictions
+  2. cookies.txt (Netscape format) — checked at request time, not import time
+  3. tv_embedded / ios as fallback clients
 """
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -21,9 +23,12 @@ log = logging.getLogger(__name__)
 
 _COOKIES_PATH = "/app/cookies.txt"
 
-# Base options — player_client=tv_embedded bypasses bot-check for most videos
-# without requiring authentication (TV clients get a relaxed policy from YouTube)
-_YDL_OPTIONS: dict[str, Any] = {
+# Base options.
+# player_client priority:
+#   web_creator → YouTube Studio API; typically not subject to the same bot checks
+#   tv_embedded → Connected-TV embedded player; relaxed policy
+#   ios         → mobile fallback
+_YDL_BASE: dict[str, Any] = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "quiet": True,
@@ -31,10 +36,9 @@ _YDL_OPTIONS: dict[str, Any] = {
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extract_flat": False,
-    # tv_embedded player client → doesn't trigger sign-in prompt on cloud IPs
     "extractor_args": {
         "youtube": {
-            "player_client": ["tv_embedded", "ios"],
+            "player_client": ["web_creator", "tv_embedded", "ios"],
         }
     },
 }
@@ -61,14 +65,20 @@ async def search_youtube(query: str) -> dict[str, Any]:
 
 
 def _extract_sync(query: str) -> dict[str, Any]:
+    # Deep-copy so yt-dlp can't mutate shared state between concurrent calls
+    options: dict[str, Any] = copy.deepcopy(_YDL_BASE)
+
     # 쿠키 파일 체크를 요청 시점에 수행 (모듈 임포트 시점이 아님)
     # → 컨테이너 기동 후 cookies.txt가 업로드되어도 즉시 반영됨
-    options = dict(_YDL_OPTIONS)
     if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0:
         options["cookiefile"] = _COOKIES_PATH
-        log.debug("yt-dlp: using cookies from %s", _COOKIES_PATH)
+        log.info("yt-dlp: cookies loaded from %s", _COOKIES_PATH)
     else:
-        log.debug("yt-dlp: no cookies file, relying on tv_embedded player client")
+        log.warning(
+            "yt-dlp: cookies.txt not found or empty at %s — "
+            "relying on web_creator/tv_embedded player clients only",
+            _COOKIES_PATH,
+        )
 
     with yt_dlp.YoutubeDL(options) as ydl:
         if not query.startswith("http"):
