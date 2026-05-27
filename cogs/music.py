@@ -117,7 +117,8 @@ class Music(commands.Cog):
         if guild.voice_client:
             await guild.voice_client.move_to(channel)
         else:
-            await channel.connect()
+            # self_deaf=True: 봇이 음성 채널에서 다른 사람 목소리를 듣지 않음
+            await channel.connect(self_deaf=True)
         return True, f"🎵 **{channel.name}** 채널에 입장했습니다."
 
     async def play_song(

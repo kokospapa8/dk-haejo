@@ -69,14 +69,14 @@ class LLMListener(commands.Cog):
             return
 
         mentioned = self.bot.user in message.mentions
+        in_music_channel = message.channel.id in self.music_channel_ids
 
-        # @멘션 없으면 무시 — 음악 채널이어도 일반 대화는 처리하지 않음
-        if not mentioned:
+        if not (mentioned or in_music_channel):
             return
 
         # Strip the @mention prefix so Claude sees clean text
         content = message.content
-        if self.bot.user:
+        if mentioned and self.bot.user:
             content = content.replace(f"<@{self.bot.user.id}>", "").strip()
             content = content.replace(f"<@!{self.bot.user.id}>", "").strip()
 
