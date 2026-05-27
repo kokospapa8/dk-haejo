@@ -11,7 +11,7 @@ services:
       - ytdlp_cache:/root/.cache/yt-dlp
       # YouTube cookies (YouTube 봇 감지 우회용)
       # scp cookies.txt ubuntu@3.34.77.242:~/dk-haejo/cookies.txt 로 업로드
-      - ./cookies.txt:/app/cookies.txt:ro
+      - ./cookies.txt:/app/cookies.txt
 
 volumes:
   ytdlp_cache:
