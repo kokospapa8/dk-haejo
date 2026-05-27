@@ -22,8 +22,6 @@ _YDL_OPTIONS: dict[str, Any] = {
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extract_flat": False,
-    # 쿠키 파일이 있으면 사용 (YouTube 봇 감지 우회)
-    **({"cookiefile": _COOKIES_PATH} if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0 else {}),
 }
 
 # FFmpeg reconnect flags – important for long streams
@@ -48,7 +46,13 @@ async def search_youtube(query: str) -> dict[str, Any]:
 
 
 def _extract_sync(query: str) -> dict[str, Any]:
-    with yt_dlp.YoutubeDL(_YDL_OPTIONS) as ydl:
+    # 쿠키 파일 체크를 요청 시점에 수행 (모듈 임포트 시점이 아님)
+    # → 컨테이너 기동 후 cookies.txt가 업로드되어도 즉시 반영됨
+    options = dict(_YDL_OPTIONS)
+    if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0:
+        options["cookiefile"] = _COOKIES_PATH
+
+    with yt_dlp.YoutubeDL(options) as ydl:
         if not query.startswith("http"):
             query = f"ytsearch:{query}"
         info = ydl.extract_info(query, download=False)
