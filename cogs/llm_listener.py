@@ -94,6 +94,7 @@ class LLMListener(commands.Cog):
         else:
             await message.reply(str(reply))
 
+
     # ── LLM dispatch ─────────────────────────────────────────────────────────
 
     async def _handle_llm(
