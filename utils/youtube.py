@@ -3,14 +3,10 @@ yt-dlp wrapper – async-safe YouTube audio extraction.
 
 Bot-detection bypass strategy (EC2, 2025+):
   1. ios client + cookies  — iOS client uses cookies natively; no PO token needed.
-     Works when the cookie session is valid.  Try this first.
   2. web client + PO token — bgutil-ytdlp-pot-provider sidecar (localhost:4416)
-     auto-injects Proof-of-Origin tokens so YouTube accepts the web client.
-     Fallback when ios is blocked.
 
-  Without proper auth YouTube returns only DRM/SABR streams, which yt-dlp
-  excludes from format selection → "Requested format is not available".
-  Valid cookies (or a PO token) give back real audio streams.
+  If YouTube returns only DRM/SABR formats (→ "Requested format is not available"),
+  set LOG_YTDLP_VERBOSE=1 in the environment to dump the full yt-dlp debug log.
 
   Ref: https://github.com/Brainicism/bgutil-ytdlp-pot-provider
 """
@@ -27,23 +23,23 @@ import yt_dlp
 
 log = logging.getLogger(__name__)
 
-# ── yt-dlp options ────────────────────────────────────────────────────────────
+# Set LOG_YTDLP_VERBOSE=1 to print full yt-dlp debug output — useful when
+# diagnosing "Requested format is not available" / DRM-only format issues.
+_VERBOSE = os.getenv("LOG_YTDLP_VERBOSE", "0") == "1"
 
 _COOKIES_PATH = "/app/cookies.txt"
 
 _YDL_BASE: dict[str, Any] = {
-    # bestaudio/best: 오디오 전용 스트림 우선, 없으면 최고 품질 스트림
     "format": "bestaudio/best",
     "noplaylist": True,
-    "quiet": True,
-    "no_warnings": True,
+    "quiet": not _VERBOSE,
+    "no_warnings": not _VERBOSE,
+    "verbose": _VERBOSE,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
-            # ios 클라이언트: 쿠키를 직접 사용, PO 토큰 불필요, non-DRM 포맷 반환
-            # web 클라이언트: bgutil 사이드카가 PO 토큰 자동 주입 (폴백)
             "player_client": ["ios", "web"],
         }
     },
@@ -58,12 +54,21 @@ FFMPEG_OPTIONS: dict[str, str] = {
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
+class _YtdlpLogger:
+    """Routes yt-dlp messages to our Python logger (used when verbose=True)."""
+    def debug(self, msg: str) -> None:
+        log.debug("[yt-dlp] %s", msg)
+    def warning(self, msg: str) -> None:
+        log.warning("[yt-dlp] %s", msg)
+    def error(self, msg: str) -> None:
+        log.error("[yt-dlp] %s", msg)
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 async def search_youtube(query: str) -> dict[str, Any]:
     """Return song info dict for *query* (title / URL / duration / thumbnail).
 
-    If *query* is not a URL, prefixes it with ``ytsearch:`` for a YouTube search.
     Runs in a thread pool to avoid blocking the event loop.
     """
     loop = asyncio.get_event_loop()
@@ -71,40 +76,67 @@ async def search_youtube(query: str) -> dict[str, Any]:
 
 
 def _extract_sync(query: str) -> dict[str, Any]:
-    # Deep-copy so yt-dlp can't mutate shared state between concurrent calls
     options: dict[str, Any] = copy.deepcopy(_YDL_BASE)
 
-    # 쿠키 파일 체크를 요청 시점에 수행 (모듈 임포트 시점이 아님)
-    # → 컨테이너 기동 후 cookies.txt가 업로드되어도 즉시 반영됨
     if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0:
         options["cookiefile"] = _COOKIES_PATH
-        log.info("yt-dlp: cookies loaded from %s", _COOKIES_PATH)
+        log.info("yt-dlp: cookies loaded from %s (size=%d B)",
+                 _COOKIES_PATH, os.path.getsize(_COOKIES_PATH))
     else:
         log.warning(
             "yt-dlp: cookies.txt not found or empty at %s — "
-            "DRM-only formats likely; try uploading fresh cookies",
+            "DRM-only formats likely; upload fresh cookies",
             _COOKIES_PATH,
         )
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        if not query.startswith("http"):
-            query = f"ytsearch:{query}"
-        info = ydl.extract_info(query, download=False)
+    if _VERBOSE:
+        options["logger"] = _YtdlpLogger()
 
-        # If it's a search result, take the first entry
+    # ── Step 1: flat search → get video URL without triggering format selection ──
+    # Using extract_flat avoids "Requested format is not available" errors during
+    # the ytsearch playlist processing phase.
+    if not query.startswith("http"):
+        flat_opts = copy.deepcopy(options)
+        flat_opts["extract_flat"] = True
+        flat_opts.pop("format", None)
+
+        with yt_dlp.YoutubeDL(flat_opts) as ydl:
+            search_info = ydl.extract_info(f"ytsearch:{query}", download=False)
+
+        if not search_info or not search_info.get("entries"):
+            raise ValueError(f"검색 결과 없음: {query!r}")
+
+        entry = search_info["entries"][0]
+        # Prefer webpage_url (full canonical URL) over the plain id
+        video_url = (
+            entry.get("webpage_url")
+            or entry.get("url")
+            or f"https://www.youtube.com/watch?v={entry['id']}"
+        )
+        log.info("yt-dlp: search hit → %s (%s)", entry.get("title", "?"), video_url)
+    else:
+        video_url = query
+
+    # ── Step 2: full extraction → format selection on the specific video URL ──
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(video_url, download=False)
+
+        # In rare cases extract_info still wraps result in a playlist
         if "entries" in info:
             info = info["entries"][0]
 
-        # Diagnostic: log available format count so we can tell DRM-only vs real
         formats = info.get("formats", [])
         audio_fmts = [f for f in formats if f.get("acodec") not in (None, "none")]
-        log.debug(
-            "yt-dlp: %s — %d total formats, %d with audio (video_id=%s)",
-            info.get("title", "?"),
-            len(formats),
-            len(audio_fmts),
-            info.get("id", "?"),
+        log.info(
+            "yt-dlp: %s — %d formats total, %d with audio",
+            info.get("title", "?"), len(formats), len(audio_fmts),
         )
+        if not audio_fmts:
+            # Log all format IDs/codecs so we can diagnose DRM vs storyboard
+            log.warning(
+                "yt-dlp: no audio formats found — available format_ids: %s",
+                [f.get("format_id") for f in formats[:20]],
+            )
 
         return {
             "title": info["title"],
