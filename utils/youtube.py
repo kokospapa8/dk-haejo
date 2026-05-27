@@ -39,9 +39,9 @@ _YDL_BASE: dict[str, Any] = {
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
-            # android = InnerTube API로 pre-signed URL 반환 → n-function JS 복호화 불필요
-            # web / tv_embedded = 폴백 (android 실패 시)
-            "player_client": ["android", "web", "tv_embedded"],
+            # web = 내부 인터프리터로 signature/n-function 복호화 (2024.12.13에서 작동)
+            # tv_embedded / ios = 폴백
+            "player_client": ["web", "tv_embedded", "ios"],
         }
     },
 }

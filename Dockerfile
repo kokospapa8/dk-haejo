@@ -15,9 +15,9 @@ WORKDIR /app
 
 # Install Python dependencies first (layer cache)
 COPY requirements.txt .
-# --upgrade ensures yt-dlp is always the newest release at build time
-# (YouTube bot-detection patches ship frequently)
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
+# yt-dlp is pinned to a specific version in requirements.txt
+# do NOT add --upgrade here; it would override the pinned version
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project source
 COPY . .
