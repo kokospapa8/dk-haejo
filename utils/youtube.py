@@ -40,9 +40,9 @@ _YDL_BASE: dict[str, Any] = {
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
-            # web_creator = YouTube Studio API; fewer bot-checks on cloud IPs
-            # Node.js in the container handles JS evaluation (n-function decryption)
-            "player_client": ["web_creator", "tv_embedded", "ios"],
+            # web = 가장 많은 포맷 제공, 쿠키 인증으로 bot check 통과
+            # tv_embedded / ios = 폴백
+            "player_client": ["web", "tv_embedded", "ios"],
         }
     },
 }
