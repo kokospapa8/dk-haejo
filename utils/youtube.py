@@ -67,16 +67,11 @@ _PLAY_OPTS: dict[str, Any] = {
     # best:      combined fallback → 4순위
     "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
     "extract_flat": False,
-    # NOTE: remote_components NOT needed — yt-dlp-ejs pip package provides
-    # the EJS scripts directly, so no GitHub download required at runtime.
-    "extractor_args": {
-        "youtube": {
-            # ios: 쿠키 직접 사용, progressive m4a, SABR 없음 → 1순위
-            # tv_embedded: 임베디드 클라이언트, SABR 미적용 → 2순위
-            # web_safari 제외: SABR 강제 (direct URL 없음)
-            "player_client": ["ios", "tv_embedded"],
-        }
-    },
+    # extractor_args(player_client) 지정 안 함 → yt-dlp 기본 클라이언트 조합 사용
+    # yt-dlp가 내부적으로 web_safari(메타데이터), tv(포맷 추출) 등을 조합함
+    # ios는 쿠키와 충돌하여 스킵됨, tv_embedded는 존재하지 않는 이름(올바른 이름: tv)
+    # bgutil PO Token 사이드카가 SABR 처리하므로 기본값으로 충분
+    "remote_components": ["ejs:github"],
 }
 
 # FFmpeg reconnect flags – critical for HTTP audio streams
@@ -128,14 +123,35 @@ async def search_youtube(query: str) -> dict[str, Any]:
     return await loop.run_in_executor(_executor, _search_sync, query)
 
 
-async def get_stream_url(webpage_url: str) -> str:
+async def get_stream_url(webpage_url: str, max_retries: int = 2) -> str:
     """Extract a fresh audio stream URL for *webpage_url*.
 
     Call this right before playback — YouTube stream URLs expire in ~6 hours.
-    Raises yt_dlp.utils.DownloadError on failure.
+    Retries up to *max_retries* times with exponential backoff (1 s, 1.5 s).
+    Raises yt_dlp.utils.DownloadError after all attempts are exhausted.
     """
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _stream_sync, webpage_url)
+    last_exc: Exception | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await loop.run_in_executor(_executor, _stream_sync, webpage_url)
+        except yt_dlp.utils.DownloadError as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                wait = 1.5 ** attempt  # 1.0 s, 1.5 s
+                log.warning(
+                    "yt-dlp [stream] retry %d/%d after %.1fs  reason=%s",
+                    attempt + 1, max_retries, wait, exc,
+                )
+                await asyncio.sleep(wait)
+            else:
+                log.error(
+                    "yt-dlp [stream] all %d attempts failed  url=%s",
+                    max_retries + 1, webpage_url,
+                )
+
+    raise last_exc  # type: ignore[misc]
 
 
 # ── sync implementations (run in thread pool) ─────────────────────────────────
@@ -198,8 +214,8 @@ def _stream_sync(webpage_url: str) -> str:
         opts["logger"] = _YtdlpLogger()
 
     log.info(
-        "yt-dlp [stream] options  format=%r  player_client=%s",
-        opts.get("format"), opts["extractor_args"]["youtube"]["player_client"],
+        "yt-dlp [stream] options  format=%r  remote_components=%s",
+        opts.get("format"), opts.get("remote_components"),
     )
 
     try:
@@ -211,6 +227,10 @@ def _stream_sync(webpage_url: str) -> str:
             "yt-dlp [stream] FAILED  url=%s  elapsed=%.2fs  error=%s",
             webpage_url, elapsed, exc,
         )
+        # On format-not-available errors, run a diagnostic extraction with no
+        # format selector so we can see exactly what formats YouTube returned.
+        if "format is not available" in str(exc).lower():
+            _diagnose_formats(webpage_url, opts)
         raise
 
     if info and "entries" in info:
@@ -244,3 +264,47 @@ def _stream_sync(webpage_url: str) -> str:
         )
 
     return stream_url
+
+
+def _diagnose_formats(webpage_url: str, base_opts: dict) -> None:
+    """Re-extract with no format selector and full verbose output.
+
+    Called automatically when 'Requested format is not available' is raised.
+    Logs format_id / ext / acodec / vcodec / url_present for every format so
+    we can tell: DRM-only? storyboard-only? signature-solving failure?
+    """
+    log.warning("yt-dlp [diag] Running diagnostic extraction (no format filter)...")
+    try:
+        diag_opts = copy.deepcopy(base_opts)
+        diag_opts.pop("format", None)          # no format constraint
+        diag_opts["quiet"] = False
+        diag_opts["verbose"] = True
+        diag_opts["logger"] = _YtdlpLogger()  # route yt-dlp debug to our logger
+
+        with yt_dlp.YoutubeDL(diag_opts) as ydl:
+            info = ydl.extract_info(webpage_url, download=False, process=False)
+
+        if not info:
+            log.warning("yt-dlp [diag] extract returned None")
+            return
+
+        fmts = info.get("formats") or []
+        log.warning(
+            "yt-dlp [diag] %d raw formats (process=False):", len(fmts)
+        )
+        for f in fmts[:30]:
+            log.warning(
+                "yt-dlp [diag]   id=%-6s  ext=%-5s  acodec=%-12s  vcodec=%-12s"
+                "  has_url=%s  has_drm=%s",
+                f.get("format_id", "?"),
+                f.get("ext", "?"),
+                f.get("acodec", "?"),
+                f.get("vcodec", "?"),
+                bool(f.get("url")),
+                f.get("has_drm", False),
+            )
+        if not fmts:
+            log.warning("yt-dlp [diag] No formats in raw info. Info keys: %s",
+                        list(info.keys()))
+    except Exception as diag_exc:
+        log.warning("yt-dlp [diag] Diagnostic extraction also failed: %s", diag_exc)
