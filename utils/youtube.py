@@ -1,10 +1,14 @@
 """
 yt-dlp wrapper – async-safe YouTube audio extraction.
 
-Bot-detection bypass strategy (layered):
-  1. web_creator player client — YouTube Studio client; cloud IPs get fewer restrictions
-  2. cookies.txt (Netscape format) — checked at request time, not import time
-  3. tv_embedded / ios as fallback clients
+Bot-detection bypass strategy (2025, EC2):
+  YouTube requires a Proof-of-Origin (PO) token for non-browser clients on
+  cloud IPs.  We use the bgutil-ytdlp-pot-provider sidecar (localhost:4416)
+  + yt-dlp-get-pot plugin to inject PO tokens automatically so the `web`
+  client works.  Cookies are still passed for age-restricted content.
+
+  Ref: https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+       https://github.com/coletdjnz/yt-dlp-get-pot
 """
 from __future__ import annotations
 
@@ -23,11 +27,10 @@ log = logging.getLogger(__name__)
 
 _COOKIES_PATH = "/app/cookies.txt"
 
-# Base options.
-# player_client priority:
-#   web_creator → YouTube Studio API; typically not subject to the same bot checks
-#   tv_embedded → Connected-TV embedded player; relaxed policy
-#   ios         → mobile fallback
+# PO Token provider endpoint (bgutil-ytdlp-pot-provider sidecar).
+# On EC2 with host-networked Discord bot, the sidecar is reachable via loopback.
+_POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://localhost:4416/get_pot")
+
 _YDL_BASE: dict[str, Any] = {
     # bestaudio* = 오디오 전용 스트림 우선, 없으면 비디오+오디오 혼합도 허용
     "format": "bestaudio*",
@@ -39,10 +42,10 @@ _YDL_BASE: dict[str, Any] = {
     "extract_flat": False,
     "extractor_args": {
         "youtube": {
-            # web 클라이언트는 버전이 오래돼 YouTube에 차단됨 → 제외
-            # tv_embedded: 임베디드 플레이어, 봇 감지 낮음, 내부 인터프리터로 서명 복호화 가능
-            # ios: 모바일 폴백
-            "player_client": ["tv_embedded", "ios"],
+            # web 클라이언트 + PO 토큰: EC2 등 클라우드 IP에서도 YouTube 우회 가능
+            # yt-dlp-get-pot 플러그인이 bgutil-provider에서 토큰을 자동으로 받아옴
+            "player_client": ["web"],
+            "po_token": [f"web+{_POT_PROVIDER_URL}"],
         }
     },
 }
@@ -80,7 +83,7 @@ def _extract_sync(query: str) -> dict[str, Any]:
     else:
         log.warning(
             "yt-dlp: cookies.txt not found or empty at %s — "
-            "relying on web_creator/tv_embedded player clients only",
+            "age-restricted content may fail; PO token provider still active",
             _COOKIES_PATH,
         )
 

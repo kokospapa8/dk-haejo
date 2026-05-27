@@ -1,7 +1,19 @@
 services:
+  # PO Token provider — generates Proof-of-Origin tokens so the `web` yt-dlp
+  # client works on cloud IPs where YouTube blocks headless requests.
+  # See: https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+  bgutil-provider:
+    image: ghcr.io/brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+    ports:
+      # Expose on loopback so the host-networked bot can reach localhost:4416
+      - "127.0.0.1:4416:4416"
+
   discord-song-bot:
     build: .
     restart: unless-stopped
+    depends_on:
+      - bgutil-provider
     env_file:
       - .env
     # Discord voice requires UDP — host networking is the easiest option on EC2
@@ -10,7 +22,7 @@ services:
       # Optional: persist yt-dlp cache between restarts
       - ytdlp_cache:/root/.cache/yt-dlp
       # YouTube cookies (YouTube 봇 감지 우회용)
-      # scp cookies.txt ubuntu@3.34.77.242:~/dk-haejo/cookies.txt 로 업로드
+      # scp cookies.txt ubuntu@<EC2_IP>:~/dk-haejo/cookies.txt 로 업로드
       - ./cookies.txt:/app/cookies.txt
 
 volumes:
