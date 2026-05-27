@@ -3,25 +3,24 @@ yt-dlp wrapper – async-safe YouTube audio extraction.
 
 Two-phase design:
   search_youtube(query)  → fast metadata (title, duration, thumbnail, webpage_url)
-                           uses extract_flat=True, no format selection, no EJS needed
+                           uses extract_flat=True, no format selection needed
   get_stream_url(url)    → actual audio stream URL, called right before playback
-                           uses EJS + ios/tv_embedded clients with cookies
+                           EJS scripts bundled via yt-dlp-ejs pip package
 
 Why two phases?
   YouTube stream URLs expire in ~6 hours. Fetching the stream URL only at
   play time ensures queued songs never hit 403 errors.
 
 Bot-detection bypass (EC2, 2025+):
-  - ios client + cookies: progressive m4a, no SABR, no PO token needed
+  - yt-dlp-ejs pip package: bundles EJS signature/n-challenge solver scripts
+    so yt-dlp never downloads them from GitHub at runtime
+  - ios client + cookies: progressive m4a/opus, no SABR, no PO token needed
   - tv_embedded fallback: embedded client, no SABR
-  - EJS (External JavaScript): signature/n-challenge solver scripts downloaded
-    from GitHub and cached in ~/.cache/yt-dlp/. Pre-cached in Dockerfile.
-  - bgutil-ytdlp-pot-provider sidecar (localhost:4416): PO token injector
-    installed as yt-dlp plugin via pip (auto-active, no config needed)
+  - bgutil-ytdlp-pot-provider plugin (localhost:4416): auto-injects PO tokens
 
-  web_safari is excluded: it forces SABR streaming which has no direct URL.
+  web_safari is excluded: it forces SABR streaming (no direct URL).
 
-Set LOG_YTDLP_VERBOSE=1 to dump full yt-dlp debug log.
+Set LOG_YTDLP_VERBOSE=1 to dump full yt-dlp debug log to application logger.
 """
 from __future__ import annotations
 
@@ -29,6 +28,7 @@ import asyncio
 import copy
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -53,22 +53,22 @@ _COMMON: dict[str, Any] = {
 
 _SEARCH_OPTS: dict[str, Any] = {
     **_COMMON,
-    "extract_flat": True,         # return entry metadata only, no stream URL fetch
+    "extract_flat": True,
     "default_search": "ytsearch",
 }
 
-# ── playback options (full extraction, format selection, EJS) ─────────────────
+# ── playback options (full extraction, format selection, EJS via pip package) ─
 
 _PLAY_OPTS: dict[str, Any] = {
     **_COMMON,
-    # webm/opus: Discord-native codec, no transcoding overhead → 1순위
-    # m4a/aac:   high quality fallback → 2순위
-    # bestaudio: any audio-only stream → 3순위
-    # best:      combined audio+video fallback → 4순위
+    # webm/opus: Discord-native codec, no transcoding → 1순위
+    # m4a/aac:   high quality → 2순위
+    # bestaudio: any audio-only → 3순위
+    # best:      combined fallback → 4순위
     "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
     "extract_flat": False,
-    # EJS challenge solver scripts — pre-cached in Dockerfile, auto-updated if stale
-    "remote_components": ["ejs:github"],
+    # NOTE: remote_components NOT needed — yt-dlp-ejs pip package provides
+    # the EJS scripts directly, so no GitHub download required at runtime.
     "extractor_args": {
         "youtube": {
             # ios: 쿠키 직접 사용, progressive m4a, SABR 없음 → 1순위
@@ -95,7 +95,7 @@ _executor = ThreadPoolExecutor(max_workers=4)
 class _YtdlpLogger:
     """Routes yt-dlp messages to our Python logger (used when verbose=True)."""
     def debug(self, msg: str) -> None:
-        log.debug("[yt-dlp] %s", msg)
+        log.debug("[yt-dlp dbg] %s", msg)
     def warning(self, msg: str) -> None:
         log.warning("[yt-dlp] %s", msg)
     def error(self, msg: str) -> None:
@@ -106,10 +106,11 @@ def _apply_cookies(options: dict[str, Any]) -> None:
     """Attach cookiefile to options dict if the file exists and is non-empty."""
     if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0:
         options["cookiefile"] = _COOKIES_PATH
-        log.info("yt-dlp: cookies loaded (%d B)", os.path.getsize(_COOKIES_PATH))
+        log.info("yt-dlp: cookies OK  path=%s  size=%d B",
+                 _COOKIES_PATH, os.path.getsize(_COOKIES_PATH))
     else:
         log.warning(
-            "yt-dlp: cookies.txt missing or empty at %s — "
+            "yt-dlp: cookies MISSING or EMPTY at %s — "
             "DRM-only formats likely; please upload fresh cookies",
             _COOKIES_PATH,
         )
@@ -140,6 +141,9 @@ async def get_stream_url(webpage_url: str) -> str:
 # ── sync implementations (run in thread pool) ─────────────────────────────────
 
 def _search_sync(query: str) -> dict[str, Any]:
+    log.info("yt-dlp [search] START  query=%r", query)
+    t0 = time.monotonic()
+
     opts = copy.deepcopy(_SEARCH_OPTS)
     _apply_cookies(opts)
     if _VERBOSE:
@@ -147,14 +151,19 @@ def _search_sync(query: str) -> dict[str, Any]:
 
     search_query = query if query.startswith("http") else f"ytsearch:{query}"
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        result = ydl.extract_info(search_query, download=False)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            result = ydl.extract_info(search_query, download=False)
+    except Exception as exc:
+        log.error("yt-dlp [search] FAILED  query=%r  error=%s", query, exc)
+        raise
 
     # ytsearch returns a playlist wrapper; unwrap first entry
     if result and "entries" in result:
         result = result["entries"][0]
 
     if not result:
+        log.error("yt-dlp [search] NO RESULTS  query=%r", query)
         raise ValueError(f"검색 결과 없음: {query!r}")
 
     video_id = result.get("id", "")
@@ -163,7 +172,12 @@ def _search_sync(query: str) -> dict[str, Any]:
         or result.get("url")
         or f"https://www.youtube.com/watch?v={video_id}"
     )
-    log.info("yt-dlp: search → %s  [%s]", result.get("title", "?"), video_id)
+    elapsed = time.monotonic() - t0
+    log.info(
+        "yt-dlp [search] OK  title=%r  video_id=%s  duration=%ss  elapsed=%.2fs",
+        result.get("title", "?"), video_id,
+        result.get("duration") or "?", elapsed,
+    )
 
     return {
         "title": result.get("title", "Unknown"),
@@ -175,23 +189,58 @@ def _search_sync(query: str) -> dict[str, Any]:
 
 
 def _stream_sync(webpage_url: str) -> str:
+    log.info("yt-dlp [stream] START  url=%s", webpage_url)
+    t0 = time.monotonic()
+
     opts = copy.deepcopy(_PLAY_OPTS)
     _apply_cookies(opts)
     if _VERBOSE:
         opts["logger"] = _YtdlpLogger()
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(webpage_url, download=False)
-        if info and "entries" in info:
-            info = info["entries"][0]
+    log.info(
+        "yt-dlp [stream] options  format=%r  player_client=%s",
+        opts.get("format"), opts["extractor_args"]["youtube"]["player_client"],
+    )
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(webpage_url, download=False)
+    except Exception as exc:
+        elapsed = time.monotonic() - t0
+        log.error(
+            "yt-dlp [stream] FAILED  url=%s  elapsed=%.2fs  error=%s",
+            webpage_url, elapsed, exc,
+        )
+        raise
+
+    if info and "entries" in info:
+        info = info["entries"][0]
 
     stream_url: str = info["url"]
+    elapsed = time.monotonic() - t0
 
-    # Diagnostic: log selected format
-    fmt = info.get("format", "?")
-    abr = info.get("abr") or info.get("tbr") or "?"
+    # Log selected format details
+    fmt_id   = info.get("format_id", "?")
+    fmt_ext  = info.get("ext", "?")
+    acodec   = info.get("acodec", "?")
+    abr      = info.get("abr") or info.get("tbr") or "?"
+    n_fmts   = len(info.get("formats", []))
+    n_audio  = len([f for f in info.get("formats", [])
+                    if f.get("acodec") not in (None, "none")])
+
     log.info(
-        "yt-dlp: stream URL ready — %s | format=%s abr=%skbps",
-        info.get("title", "?"), fmt, abr,
+        "yt-dlp [stream] OK  title=%r  format_id=%s  ext=%s  acodec=%s  "
+        "abr=%skbps  formats_total=%d  formats_with_audio=%d  elapsed=%.2fs",
+        info.get("title", "?"), fmt_id, fmt_ext, acodec,
+        abr, n_fmts, n_audio, elapsed,
     )
+
+    if n_audio == 0:
+        log.warning(
+            "yt-dlp [stream] WARNING: 0 audio formats found — "
+            "possible DRM or signature failure. "
+            "Available format_ids: %s",
+            [f.get("format_id") for f in info.get("formats", [])[:20]],
+        )
+
     return stream_url
