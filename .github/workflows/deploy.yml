@@ -17,7 +17,11 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ── 1. AWS 인증 ──────────────────────────────────────────────────────────
+      # ── 1. 코드 체크아웃 (scripts/deploy.sh 가져오기 위해) ───────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. AWS 인증 ──────────────────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -25,25 +29,20 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # ── 2. .env 동기화 ───────────────────────────────────────────────────────
-      # base64로 인코딩 후 전달 → 특수문자/이스케이프 문제 완전 회피
+      # ── 3. .env 동기화 ───────────────────────────────────────────────────────
       - name: Sync .env to EC2 via SSM
         run: |
-          ENV_B64=$(printf '%s\n' \
-            "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" \
-            "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" \
-            "CLAUDE_MODEL=${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}" \
-            "MUSIC_CHANNEL_IDS=${{ secrets.MUSIC_CHANNEL_IDS }}" \
+          ENV_B64=$(printf 'DISCORD_TOKEN=%s\nANTHROPIC_API_KEY=%s\nCLAUDE_MODEL=%s\nMUSIC_CHANNEL_IDS=%s\n' \
+            '${{ secrets.DISCORD_TOKEN }}' \
+            '${{ secrets.ANTHROPIC_API_KEY }}' \
+            '${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}' \
+            '${{ secrets.MUSIC_CHANNEL_IDS }}' \
             | base64 -w0)
 
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[
-              \"mkdir -p /home/ubuntu/dk-haejo\",
-              \"echo ${ENV_B64} | base64 -d > /home/ubuntu/dk-haejo/.env\",
-              \"echo .env synced\"
-            ]" \
+            --parameters "commands=[\"mkdir -p /home/ubuntu/dk-haejo\",\"echo ${ENV_B64} | base64 -d > /home/ubuntu/dk-haejo/.env\"]" \
             --comment "sync-env" \
             --query "Command.CommandId" --output text)
 
@@ -57,42 +56,17 @@ jobs:
             sleep 5
           done
 
-      # ── 3. 코드 Pull + Docker 재빌드 ─────────────────────────────────────────
-      # 스크립트를 base64로 인코딩 → SSM에 단일 문자열로 전달 → EC2에서 디코딩 실행
+      # ── 4. 배포 스크립트를 base64로 인코딩 후 SSM 실행 ──────────────────────
+      # scripts/deploy.sh 는 별도 파일 → YAML 이스케이프 문제 없음
       - name: Deploy via SSM
         id: deploy
         run: |
-          DEPLOY_SCRIPT_B64=$(base64 -w0 << 'BASH_EOF'
-          #!/bin/bash
-          set -e
-          REPO=/home/ubuntu/dk-haejo
-
-          # 디렉토리가 있지만 .git이 없으면 (이전 실패 잔재) 삭제
-          if [ -d "$REPO" ] && [ ! -d "$REPO/.git" ]; then
-            echo "잔여 디렉토리 정리: $REPO"
-            rm -rf "$REPO"
-          fi
-
-          # 최초 클론
-          if [ ! -d "$REPO/.git" ]; then
-            git clone https://github.com/kokospapa8/dk-haejo.git "$REPO"
-          fi
-
-          cd "$REPO"
-          git fetch origin main
-          git reset --hard origin/main
-
-          docker compose up -d --build --remove-orphans 2>&1
-          docker image prune -f
-
-          echo "✅ 배포 완료: $(date)"
-          BASH_EOF
-          )
+          DEPLOY_B64=$(base64 -w0 scripts/deploy.sh)
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"echo ${DEPLOY_SCRIPT_B64} | base64 -d | bash\"]" \
+            --parameters "commands=[\"echo ${DEPLOY_B64} | base64 -d | bash\"]" \
             --comment "deploy-${{ github.sha }}" \
             --query "Command.CommandId" \
             --output text)
@@ -100,7 +74,7 @@ jobs:
           echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
           echo "SSM Command ID: $COMMAND_ID"
 
-      # ── 4. 완료 대기 및 로그 출력 ────────────────────────────────────────────
+      # ── 5. 완료 대기 및 로그 출력 ────────────────────────────────────────────
       - name: Wait for deployment
         run: |
           COMMAND_ID="${{ steps.deploy.outputs.command_id }}"
