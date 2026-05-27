@@ -22,6 +22,8 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._queues: dict[int, MusicQueue] = {}  # guild_id → MusicQueue
+        # 명령어를 받은 텍스트 채널 저장 → 재생 중 에러 발생 시 알림용
+        self._text_channels: dict[int, discord.TextChannel] = {}
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -50,6 +52,13 @@ class Music(commands.Cog):
         def _after(error: Optional[Exception]) -> None:
             if error:
                 log.error("Playback error in guild %s: %s", guild.id, error)
+                # 텍스트 채널에 에러 알림
+                ch = self._text_channels.get(guild.id)
+                if ch:
+                    asyncio.run_coroutine_threadsafe(
+                        ch.send(f"⚠️ 재생 중 오류가 발생했습니다: `{error}`"),
+                        self.bot.loop,
+                    )
             asyncio.run_coroutine_threadsafe(self._play_next(guild), self.bot.loop)
 
         vc.play(source, after=_after)
@@ -76,8 +85,16 @@ class Music(commands.Cog):
         return True, f"🎵 **{channel.name}** 채널에 입장했습니다."
 
     async def play_song(
-        self, guild: discord.Guild, member: discord.Member, query: str
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        query: str,
+        text_channel: Optional[discord.TextChannel] = None,
     ) -> str:
+        # 텍스트 채널 저장 (재생 중 에러 알림용)
+        if text_channel:
+            self._text_channels[guild.id] = text_channel
+
         # Auto-join if not connected
         if not guild.voice_client:
             ok, msg = await self.join_channel(member)
@@ -89,7 +106,19 @@ class Music(commands.Cog):
             info = await search_youtube(query)
         except Exception as exc:
             log.exception("YouTube search failed for query %r", query)
-            return f"❌ 검색 실패: {exc}"
+            err = str(exc)
+            if "Sign in to confirm" in err or "not a bot" in err:
+                return (
+                    "❌ YouTube가 봇으로 감지했습니다. "
+                    "잠시 후 다시 시도하거나 관리자에게 문의해 주세요."
+                )
+            if "Video unavailable" in err or "not available" in err.lower():
+                return f"❌ **{query}** — 해당 영상을 재생할 수 없습니다 (지역 제한 또는 삭제된 영상)."
+            if "Private video" in err:
+                return "❌ 비공개 영상은 재생할 수 없습니다."
+            # 그 외 에러: 짧게 요약해서 보여줌
+            short = err.split("\n")[0][:200]
+            return f"❌ 검색 실패: {short}"
 
         song = Song(
             title=info["title"],

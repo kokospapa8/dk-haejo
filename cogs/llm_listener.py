@@ -152,7 +152,9 @@ class LLMListener(commands.Cog):
 
         match tool_name:
             case "play_song":
-                return await music.play_song(guild, member, inputs["query"])
+                return await music.play_song(
+                    guild, member, inputs["query"], message.channel
+                )
 
             case "pause_playback":
                 return await music.pause(guild)
