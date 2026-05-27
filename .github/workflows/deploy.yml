@@ -19,12 +19,6 @@ jobs:
 
     steps:
       # ── 1. AWS 인증 (IAM 사용자 Access Key) ────────────────────────────────
-      # TODO: Terraform bootstrap 완료 후 아래 방식으로 교체 (OIDC, 키 불필요)
-      # - name: Configure AWS credentials (OIDC)
-      #   uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-      #     aws-region: ${{ secrets.AWS_REGION }}
       - name: Configure AWS credentials (Access Key)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -35,47 +29,53 @@ jobs:
       # ── 2. EC2에 .env 파일 최신화 (SSM) ────────────────────────────────────
       - name: Sync .env to EC2 via SSM
         run: |
-          ENV_CONTENT=$(cat <<'ENVEOF'
-          DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}
-          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_MODEL=${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}
-          MUSIC_CHANNEL_IDS=${{ secrets.MUSIC_CHANNEL_IDS }}
-          ENVEOF
-          )
-
-          aws ssm send-command \
+          CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[
-              \"mkdir -p \$HOME/dk-haejo\",
-              \"cat > \$HOME/dk-haejo/.env << 'EOF'\nDISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}\nANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nCLAUDE_MODEL=${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}\nMUSIC_CHANNEL_IDS=${{ secrets.MUSIC_CHANNEL_IDS }}\nEOF\"
+            --parameters commands="[
+              \"mkdir -p /home/ubuntu/dk-haejo\",
+              \"printf 'DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}\nANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nCLAUDE_MODEL=${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}\nMUSIC_CHANNEL_IDS=${{ secrets.MUSIC_CHANNEL_IDS }}\n' > /home/ubuntu/dk-haejo/.env\"
             ]" \
             --comment "sync .env" \
-            --output text --query "Command.CommandId" > /tmp/cmd_env_id.txt
+            --query "Command.CommandId" --output text)
 
-          aws ssm wait command-executed \
-            --command-id "$(cat /tmp/cmd_env_id.txt)" \
-            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" || true
+          echo "env_cmd_id=$CMD_ID" >> $GITHUB_ENV
+
+          # 완료 대기
+          for i in $(seq 1 12); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --query "Status" --output text 2>/dev/null || echo "Pending")
+            [ "$STATUS" = "Success" ] && break
+            [ "$STATUS" = "Failed"  ] && { echo "❌ .env 동기화 실패"; exit 1; }
+            sleep 5
+          done
 
       # ── 3. 코드 Pull + Docker 재빌드 (SSM) ─────────────────────────────────
       - name: Deploy via SSM
         id: deploy
         run: |
+          REPO="/home/ubuntu/dk-haejo"
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "set -e",
-              "REPO=$HOME/dk-haejo",
-              "if [ ! -d \"$REPO/.git\" ]; then git clone https://github.com/kokospapa8/dk-haejo.git $REPO; fi",
-              "cd $REPO",
-              "git fetch origin main",
-              "git reset --hard origin/main",
-              "docker compose up -d --build --remove-orphans 2>&1",
-              "docker image prune -f",
-              "echo \"✅ 배포 완료: $(date)\""
-            ]' \
-            --comment "deploy bot ${{ github.sha }}" \
+            --parameters commands="[
+              \"set -e\",
+              \"REPO=$REPO\",
+              \"# 디렉토리가 있지만 git repo가 아니면 삭제 후 클론\",
+              \"if [ -d \\\$REPO ] && [ ! -d \\\$REPO/.git ]; then rm -rf \\\$REPO; fi\",
+              \"# 없으면 클론\",
+              \"if [ ! -d \\\$REPO/.git ]; then git clone https://github.com/kokospapa8/dk-haejo.git \\\$REPO; fi\",
+              \"cd \\\$REPO\",
+              \"git fetch origin main\",
+              \"git reset --hard origin/main\",
+              \"docker compose up -d --build --remove-orphans 2>&1\",
+              \"docker image prune -f\",
+              \"echo '✅ 배포 완료'\"
+            ]" \
+            --comment "deploy ${{ github.sha }}" \
             --query "Command.CommandId" \
             --output text)
 
