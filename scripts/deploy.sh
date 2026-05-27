@@ -57,6 +57,9 @@ cd "$REPO"
 git fetch origin main
 git reset --hard origin/main
 
+# cookies.txt 없으면 빈 파일 생성 (Docker 마운트 오류 방지)
+touch "$REPO/cookies.txt"
+
 docker compose up -d --build --remove-orphans
 docker image prune -f
 

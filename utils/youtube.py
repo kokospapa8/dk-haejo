@@ -4,12 +4,15 @@ yt-dlp wrapper – async-safe YouTube audio extraction.
 from __future__ import annotations
 
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import yt_dlp
 
 # ── yt-dlp options ────────────────────────────────────────────────────────────
+
+_COOKIES_PATH = "/app/cookies.txt"
 
 _YDL_OPTIONS: dict[str, Any] = {
     "format": "bestaudio/best",
@@ -19,12 +22,8 @@ _YDL_OPTIONS: dict[str, Any] = {
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extract_flat": False,
-    # ios 클라이언트: 서버 환경에서 YouTube 봇 감지 우회
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["ios", "web"],
-        }
-    },
+    # 쿠키 파일이 있으면 사용 (YouTube 봇 감지 우회)
+    **({"cookiefile": _COOKIES_PATH} if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0 else {}),
 }
 
 # FFmpeg reconnect flags – important for long streams
