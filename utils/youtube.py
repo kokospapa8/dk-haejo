@@ -1,19 +1,28 @@
 """
 yt-dlp wrapper – async-safe YouTube audio extraction.
+
+Bot-detection bypass strategy (layered):
+  1. tv_embedded player client → no login required for most videos
+  2. cookies.txt (Netscape format) → checked at request time, not import time
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import yt_dlp
 
+log = logging.getLogger(__name__)
+
 # ── yt-dlp options ────────────────────────────────────────────────────────────
 
 _COOKIES_PATH = "/app/cookies.txt"
 
+# Base options — player_client=tv_embedded bypasses bot-check for most videos
+# without requiring authentication (TV clients get a relaxed policy from YouTube)
 _YDL_OPTIONS: dict[str, Any] = {
     "format": "bestaudio/best",
     "noplaylist": True,
@@ -22,6 +31,12 @@ _YDL_OPTIONS: dict[str, Any] = {
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extract_flat": False,
+    # tv_embedded player client → doesn't trigger sign-in prompt on cloud IPs
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["tv_embedded", "ios"],
+        }
+    },
 }
 
 # FFmpeg reconnect flags – important for long streams
@@ -51,6 +66,9 @@ def _extract_sync(query: str) -> dict[str, Any]:
     options = dict(_YDL_OPTIONS)
     if os.path.exists(_COOKIES_PATH) and os.path.getsize(_COOKIES_PATH) > 0:
         options["cookiefile"] = _COOKIES_PATH
+        log.debug("yt-dlp: using cookies from %s", _COOKIES_PATH)
+    else:
+        log.debug("yt-dlp: no cookies file, relying on tv_embedded player client")
 
     with yt_dlp.YoutubeDL(options) as ydl:
         if not query.startswith("http"):
