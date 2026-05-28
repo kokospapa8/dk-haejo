@@ -123,6 +123,15 @@ async def search_youtube(query: str) -> dict[str, Any]:
     return await loop.run_in_executor(_executor, _search_sync, query)
 
 
+async def search_youtube_multi(query: str, count: int = 10) -> list[dict[str, Any]]:
+    """Search YouTube and return up to *count* results (metadata only, no stream URL).
+
+    Uses ytsearch{N}: prefix so a single yt-dlp call returns multiple entries.
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _search_multi_sync, query, min(count, 10))
+
+
 async def get_stream_url(webpage_url: str, max_retries: int = 2) -> str:
     """Extract a fresh audio stream URL for *webpage_url*.
 
@@ -202,6 +211,47 @@ def _search_sync(query: str) -> dict[str, Any]:
         "duration": result.get("duration") or 0,
         "thumbnail": result.get("thumbnail"),
     }
+
+
+def _search_multi_sync(query: str, count: int) -> list[dict[str, Any]]:
+    log.info("yt-dlp [search_multi] START  query=%r  count=%d", query, count)
+    t0 = time.monotonic()
+
+    opts = copy.deepcopy(_SEARCH_OPTS)
+    _apply_cookies(opts)
+    if _VERBOSE:
+        opts["logger"] = _YtdlpLogger()
+
+    search_query = query if query.startswith("http") else f"ytsearch{count}:{query}"
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            result = ydl.extract_info(search_query, download=False)
+    except Exception as exc:
+        log.error("yt-dlp [search_multi] FAILED  query=%r  error=%s", query, exc)
+        raise
+
+    entries = [e for e in (result.get("entries") or []) if e][:count]
+    elapsed = time.monotonic() - t0
+    log.info(
+        "yt-dlp [search_multi] OK  query=%r  results=%d  elapsed=%.2fs",
+        query, len(entries), elapsed,
+    )
+
+    return [
+        {
+            "title": e.get("title", "Unknown"),
+            "video_id": e.get("id", ""),
+            "webpage_url": (
+                e.get("webpage_url")
+                or e.get("url")
+                or f"https://www.youtube.com/watch?v={e.get('id', '')}"
+            ),
+            "duration": e.get("duration") or 0,
+            "thumbnail": e.get("thumbnail"),
+        }
+        for e in entries
+    ]
 
 
 def _stream_sync(webpage_url: str) -> str:

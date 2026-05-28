@@ -61,6 +61,33 @@ class MusicQueue:
                 return self.queue.pop(index)
             return None
 
+    async def remove_multiple(self, indices: list[int]) -> list[Song]:
+        """Remove songs at the given 0-based indices.
+
+        Processes in descending order so earlier removals don't shift
+        the positions of later ones. Returns the removed songs in the
+        original (ascending) order, skipping out-of-range indices.
+        """
+        async with self._lock:
+            valid = sorted(
+                {i for i in indices if 0 <= i < len(self.queue)},
+                reverse=True,  # remove from the end first
+            )
+            removed: list[Song] = []
+            for idx in valid:
+                removed.append(self.queue.pop(idx))
+            removed.reverse()  # restore original order for the reply message
+            return removed
+
+    async def remove_by_title(self, title: str) -> Optional[Song]:
+        """Remove the first queue entry whose title contains *title* (case-insensitive)."""
+        async with self._lock:
+            needle = title.lower()
+            for i, song in enumerate(self.queue):
+                if needle in song.title.lower():
+                    return self.queue.pop(i)
+            return None
+
     def clear(self) -> None:
         self.queue.clear()
         self.current = None

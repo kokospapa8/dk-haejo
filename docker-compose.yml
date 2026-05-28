@@ -24,6 +24,8 @@ services:
       # YouTube cookies (YouTube 봇 감지 우회용)
       # scp cookies.txt ubuntu@<EC2_IP>:~/dk-haejo/cookies.txt 로 업로드
       - ./cookies.txt:/app/cookies.txt
+      # Per-guild playback history (host bind mount → survives container rebuilds)
+      - ./data:/app/data
 
 volumes:
   ytdlp_cache:

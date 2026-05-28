@@ -1,6 +1,12 @@
 # 환경변수 — 절대 커밋 금지
 .env
 
+# YouTube 쿠키 — Google 계정 세션 포함, 절대 커밋 금지
+cookies.txt
+
+# 런타임 데이터 (재생기록, 플레이리스트) — 개인정보 포함
+data/
+
 # Python
 __pycache__/
 *.py[cod]

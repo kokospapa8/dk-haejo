@@ -36,7 +36,7 @@ jobs:
           ENV_B64=$(printf 'DISCORD_TOKEN=%s\nANTHROPIC_API_KEY=%s\nCLAUDE_MODEL=%s\nMUSIC_CHANNEL_IDS=%s\n' \
             '${{ secrets.DISCORD_TOKEN }}' \
             '${{ secrets.ANTHROPIC_API_KEY }}' \
-            '${{ secrets.CLAUDE_MODEL || 'claude-opus-4-7' }}' \
+            '${{ secrets.CLAUDE_MODEL || 'claude-sonnet-4-6' }}' \
             '${{ secrets.MUSIC_CHANNEL_IDS }}' \
             | base64 -w0)
 

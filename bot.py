@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 COGS = [
     "cogs.music",
     "cogs.llm_listener",
+    "cogs.cookie_watcher",
 ]
 
 

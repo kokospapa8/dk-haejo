@@ -13,8 +13,10 @@ import discord
 from discord.ext import commands
 from yt_dlp.utils import DownloadError
 
+from utils import history as hist
+from utils import playlist as plist
 from utils.music_queue import MusicQueue, RepeatMode, Song
-from utils.youtube import FFMPEG_OPTIONS, get_stream_url, search_youtube
+from utils.youtube import FFMPEG_OPTIONS, get_stream_url, search_youtube, search_youtube_multi
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +92,20 @@ class Music(commands.Cog):
         self._cancel_idle_timer(guild.id)  # 재생 시작 → 타이머 취소
         vc.play(source, after=_after)
 
+        # Persist to playback history (non-blocking — fast file write)
+        try:
+            hist.add_song(guild.id, song)
+        except Exception:
+            log.exception("history: failed to save song %r", song.title)
+
+        # Update bot Activity status → shows "Listening to <title>" next to bot name
+        await self.bot.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.listening,
+                name=song.title,
+            )
+        )
+
     async def _play_next(self, guild: discord.Guild) -> None:
         """Called automatically after a song finishes."""
         queue = self._get_queue(guild.id)
@@ -125,6 +141,7 @@ class Music(commands.Cog):
             queue = self._get_queue(guild.id)
             queue.clear()
             await vc.disconnect()
+            await self.bot.change_presence(activity=None)  # clear "Listening to" status
             ch = self._text_channels.get(guild.id)
             if ch:
                 await ch.send("😴 5분 동안 음악이 없어서 음성 채널을 나갔습니다.")
@@ -216,6 +233,76 @@ class Music(commands.Cog):
             dur = self._format_duration(song.duration)
             return f"✅ **{song.title}** `[{dur}]` → 큐 #{pos} 추가됨"
 
+    async def play_songs(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        queries: list[str],
+        text_channel: Optional[discord.TextChannel] = None,
+    ) -> str:
+        """Search multiple songs in parallel and add them all to the queue.
+
+        The first result starts playing immediately if nothing is currently playing;
+        the rest are enqueued. Searches run concurrently so the total wait time
+        is roughly equal to the slowest single search.
+        """
+        if text_channel:
+            self._text_channels[guild.id] = text_channel
+
+        # Auto-join if not connected
+        if not guild.voice_client:
+            ok, msg = await self.join_channel(member)
+            if not ok:
+                return msg
+
+        # Search all queries in parallel
+        log.info("play_songs: searching %d queries in parallel", len(queries))
+        results = await asyncio.gather(
+            *[search_youtube(q) for q in queries],
+            return_exceptions=True,
+        )
+
+        songs: list[Song] = []
+        failed: list[str] = []
+        for q, result in zip(queries, results):
+            if isinstance(result, Exception):
+                log.warning("play_songs: search failed for %r: %s", q, result)
+                failed.append(q)
+                continue
+            songs.append(Song(
+                title=result["title"],
+                webpage_url=result["webpage_url"],
+                duration=result["duration"],
+                thumbnail=result.get("thumbnail"),
+                requested_by=member.display_name,
+                video_id=result.get("video_id", ""),
+            ))
+
+        if not songs:
+            return "❌ 검색된 곡이 없습니다."
+
+        queue = self._get_queue(guild.id)
+        vc = guild.voice_client
+        play_first = not vc.is_playing() and not vc.is_paused()
+
+        lines: list[str] = []
+        for i, song in enumerate(songs):
+            dur = self._format_duration(song.duration)
+            if i == 0 and play_first:
+                queue.current = song
+                await self._play_audio(guild, song)
+                lines.append(f"▶️ **{song.title}** `[{dur}]` 재생 중")
+            else:
+                await queue.add(song)
+                pos = len(queue.queue)
+                lines.append(f"✅ **{song.title}** `[{dur}]` → 큐 #{pos}")
+
+        if failed:
+            failed_str = ", ".join(f"`{q}`" for q in failed)
+            lines.append(f"\n⚠️ 검색 실패: {failed_str}")
+
+        return "\n".join(lines)
+
     async def pause(self, guild: discord.Guild) -> str:
         vc = guild.voice_client
         if not vc or not vc.is_playing():
@@ -247,6 +334,7 @@ class Music(commands.Cog):
         queue.clear()
         self._cancel_idle_timer(guild.id)
         vc.stop()
+        await self.bot.change_presence(activity=None)  # clear "Listening to" status
         self._start_idle_timer(guild)  # 정지 후 5분 타이머 시작
         return "⏹ 재생을 멈추고 큐를 비웠습니다."
 
@@ -295,13 +383,191 @@ class Music(commands.Cog):
         )
         return embed
 
-    async def remove_from_queue(self, guild: discord.Guild, index: int) -> str:
-        """index is 1-based (user-facing)."""
+    async def remove_from_queue(self, guild: discord.Guild, indices: list[int]) -> str:
+        """Remove songs by 1-based position numbers (user-facing). Accepts multiple indices."""
         queue = self._get_queue(guild.id)
-        song = await queue.remove(index - 1)
+        zero_based = [i - 1 for i in indices]
+        removed = await queue.remove_multiple(zero_based)
+
+        if not removed:
+            out_of_range = [i for i in indices if i < 1 or i > len(queue.queue) + len(removed)]
+            return (
+                f"❌ 해당 번호의 곡을 찾을 수 없습니다. "
+                f"(큐에 {len(queue.queue)}곡 있음)"
+            )
+
+        if len(removed) == 1:
+            return f"🗑 **{removed[0].title}** 을(를) 큐에서 제거했습니다."
+
+        lines = [f"🗑 {len(removed)}곡을 큐에서 제거했습니다:"]
+        lines += [f"  • **{s.title}**" for s in removed]
+        return "\n".join(lines)
+
+    async def add_from_search(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        search_results: list[dict],
+        indices: list[int],          # 1-based
+        text_channel: Optional[discord.TextChannel] = None,
+    ) -> str:
+        """Add songs selected by index from a prior search_results list to the queue."""
+        if not search_results:
+            return "❌ 검색 결과가 없습니다. 먼저 검색해 주세요."
+
+        if text_channel:
+            self._text_channels[guild.id] = text_channel
+
+        if not guild.voice_client:
+            ok, msg = await self.join_channel(member)
+            if not ok:
+                return msg
+
+        selected = [
+            search_results[i - 1]
+            for i in indices
+            if 1 <= i <= len(search_results)
+        ]
+        if not selected:
+            return f"❌ 올바른 번호를 선택해 주세요. (1–{len(search_results)})"
+
+        songs = [
+            Song(
+                title=r["title"],
+                webpage_url=r["webpage_url"],
+                duration=r["duration"],
+                thumbnail=r.get("thumbnail"),
+                requested_by=member.display_name,
+                video_id=r.get("video_id", ""),
+            )
+            for r in selected
+        ]
+
+        queue = self._get_queue(guild.id)
+        vc = guild.voice_client
+        play_first = not vc.is_playing() and not vc.is_paused()
+
+        lines: list[str] = []
+        for i, song in enumerate(songs):
+            dur = self._format_duration(song.duration)
+            if i == 0 and play_first:
+                queue.current = song
+                await self._play_audio(guild, song)
+                lines.append(f"▶️ **{song.title}** `[{dur}]` 재생 중")
+            else:
+                await queue.add(song)
+                pos = len(queue.queue)
+                lines.append(f"✅ **{song.title}** `[{dur}]` → 큐 #{pos}")
+
+        return "\n".join(lines)
+
+    # ── playlist methods ──────────────────────────────────────────────────────
+
+    async def add_to_playlist(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        query: Optional[str] = None,
+    ) -> str:
+        """Add a song to the requesting member's OWN playlist only.
+
+        If *query* is None, adds the currently playing song.
+        Otherwise searches YouTube for *query* and adds the first result.
+        """
+        user_id = str(member.id)
+        username = member.display_name
+
+        if query:
+            # Search YouTube for the requested song
+            try:
+                meta = await search_youtube(query)
+            except Exception as exc:
+                return f"❌ 검색 실패: {str(exc)[:200]}"
+            song_data = meta
+        else:
+            # Add currently playing song
+            queue = self._get_queue(guild.id)
+            if not queue.current:
+                return "⚠️ 현재 재생 중인 곡이 없습니다."
+            song_data = queue.current
+
+        already_existed, total = plist.add_song(guild.id, user_id, username, song_data)
+        title = (
+            song_data.get("title") if isinstance(song_data, dict)
+            else getattr(song_data, "title", "?")
+        )
+
+        if already_existed:
+            return f"🔄 **{title}** 은(는) 이미 플레이리스트에 있어서 맨 뒤로 이동했습니다. (총 {total}곡)"
+        if total == plist.MAX_PER_USER and not already_existed:
+            # song was NOT added (cap reached)
+            return (
+                f"❌ 플레이리스트가 가득 찼습니다 ({plist.MAX_PER_USER}곡). "
+                "곡을 먼저 삭제해 주세요."
+            )
+        return f"✅ **{title}** 을(를) 내 플레이리스트에 추가했습니다. (총 {total}곡)"
+
+    async def remove_from_playlist(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        indices: list[int],
+    ) -> str:
+        """Remove songs from the requesting member's OWN playlist by 1-based indices."""
+        user_id = str(member.id)
+        zero_based = [i - 1 for i in indices]
+        removed = plist.remove_songs(guild.id, user_id, zero_based)
+
+        if not removed:
+            _, songs = plist.get_playlist(guild.id, user_id)
+            return f"❌ 해당 번호의 곡을 찾을 수 없습니다. (플레이리스트에 {len(songs)}곡 있음)"
+
+        if len(removed) == 1:
+            return f"🗑 **{removed[0]['title']}** 을(를) 플레이리스트에서 제거했습니다."
+
+        lines = [f"🗑 {len(removed)}곡을 플레이리스트에서 제거했습니다:"]
+        lines += [f"  • **{s['title']}**" for s in removed]
+        return "\n".join(lines)
+
+    def get_playlist_for_display(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        target_username: Optional[str] = None,
+    ) -> tuple[str, list[dict]]:
+        """Return (display_name, songs) for viewing.
+
+        If *target_username* is None or matches the member's own name,
+        returns the member's own playlist.  Otherwise does a name search.
+        Returns ("", []) when the target is not found.
+        """
+        own_name = member.display_name
+
+        if not target_username or target_username.lower() == own_name.lower():
+            username, songs = plist.get_playlist(guild.id, str(member.id))
+            return (username or own_name), songs
+
+        # Someone else's playlist
+        _, username, songs = plist.find_by_username(guild.id, target_username)
+        if username is None:
+            return "", []
+        return username, songs
+
+    def get_current_song(self, guild: discord.Guild) -> Optional[Song]:
+        """Return the currently playing/paused song, or None."""
+        return self._get_queue(guild.id).current
+
+    def get_history(self, guild: discord.Guild, limit: int = 20) -> list[dict]:
+        """Return recent playback history for this guild."""
+        return hist.get_history(guild.id, limit)
+
+    async def remove_by_title(self, guild: discord.Guild, title: str) -> str:
+        """Remove the first queue entry whose title contains *title* (case-insensitive)."""
+        queue = self._get_queue(guild.id)
+        song = await queue.remove_by_title(title)
         if song:
             return f"🗑 **{song.title}** 을(를) 큐에서 제거했습니다."
-        return f"❌ {index}번 곡을 찾을 수 없습니다. (큐에 {len(queue.queue)}곡 있음)"
+        return f"❌ `{title}` 와(과) 일치하는 곡을 큐에서 찾을 수 없습니다."
 
     async def set_repeat(self, guild: discord.Guild, mode: str) -> str:
         queue = self._get_queue(guild.id)
@@ -333,6 +599,7 @@ class Music(commands.Cog):
         queue.clear()
         self._cancel_idle_timer(guild.id)
         await vc.disconnect()
+        await self.bot.change_presence(activity=None)  # clear "Listening to" status
         return "👋 음성 채널에서 나갔습니다."
 
 
