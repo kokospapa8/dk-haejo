@@ -99,10 +99,11 @@ class Music(commands.Cog):
             log.exception("history: failed to save song %r", song.title)
 
         # Update bot Activity status → shows "Listening to <title>" next to bot name
+        # Discord Activity name is capped at 128 chars
         await self.bot.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.listening,
-                name=song.title,
+                name=song.title[:128],
             )
         )
 
