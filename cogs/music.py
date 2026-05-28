@@ -20,7 +20,7 @@ from utils.youtube import FFMPEG_OPTIONS, get_stream_url, search_youtube, search
 
 log = logging.getLogger(__name__)
 
-_IDLE_TIMEOUT = 5 * 60  # 5분 동안 음악 없으면 자동 퇴장 (초)
+_IDLE_TIMEOUT = 60  # 1분 동안 음악 없으면 자동 퇴장 (초)
 
 
 class Music(commands.Cog):
@@ -130,8 +130,13 @@ class Music(commands.Cog):
             task.cancel()
 
     async def _idle_leave(self, guild: discord.Guild) -> None:
-        """Wait _IDLE_TIMEOUT seconds then leave if still idle."""
+        """Announce the 1-minute countdown, wait, then leave if still idle."""
+        ch = self._text_channels.get(guild.id)
+        if ch:
+            await ch.send("😴 대기열이 비었습니다. **1분 후** 음성 채널에서 자동으로 나갑니다.")
+
         await asyncio.sleep(_IDLE_TIMEOUT)
+
         vc = guild.voice_client
         if not vc:
             return
@@ -142,9 +147,8 @@ class Music(commands.Cog):
             queue.clear()
             await vc.disconnect()
             await self.bot.change_presence(activity=None)  # clear "Listening to" status
-            ch = self._text_channels.get(guild.id)
             if ch:
-                await ch.send("😴 5분 동안 음악이 없어서 음성 채널을 나갔습니다.")
+                await ch.send("👋 음성 채널에서 나갔습니다.")
 
     # ── public methods (called by LLM listener) ───────────────────────────────
 
@@ -335,7 +339,7 @@ class Music(commands.Cog):
         self._cancel_idle_timer(guild.id)
         vc.stop()
         await self.bot.change_presence(activity=None)  # clear "Listening to" status
-        self._start_idle_timer(guild)  # 정지 후 5분 타이머 시작
+        self._start_idle_timer(guild)  # 정지 후 1분 타이머 시작
         return "⏹ 재생을 멈추고 큐를 비웠습니다."
 
     def view_queue(self, guild: discord.Guild) -> discord.Embed:
