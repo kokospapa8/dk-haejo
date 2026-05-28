@@ -318,7 +318,7 @@ class LLMListener(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.music_channel_ids: set[int] = _load_channel_ids()
-        self._anthropic = anthropic.Anthropic(
+        self._anthropic = anthropic.AsyncAnthropic(
             api_key=os.environ["ANTHROPIC_API_KEY"]
         )
         self._model: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -403,7 +403,7 @@ class LLMListener(commands.Cog):
             messages = [{"role": "user", "content": enriched_text}]
 
         try:
-            response = self._anthropic.messages.create(
+            response = await self._anthropic.messages.create(
                 model=self._model,
                 max_tokens=1024,
                 system=[
@@ -604,7 +604,7 @@ class LLMListener(commands.Cog):
         # ── Claude summarisation call ─────────────────────────────────────────
         max_tok = 2000 if detail_level == "detailed" else 1200
         try:
-            resp = self._anthropic.messages.create(
+            resp = await self._anthropic.messages.create(
                 model=self._model,
                 max_tokens=max_tok,
                 messages=[{"role": "user", "content": prompt}],

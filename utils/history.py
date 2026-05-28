@@ -77,13 +77,16 @@ def add_song(guild_id: int, song: Any) -> None:
         song.get("video_id") if isinstance(song, dict) else ""
     ) or ""
 
+    def _g(key: str, default: Any = None) -> Any:
+        return song.get(key, default) if isinstance(song, dict) else getattr(song, key, default)
+
     entry: dict[str, Any] = {
-        "title":        getattr(song, "title",        song.get("title",        "Unknown")) if not isinstance(song, dict) else song.get("title", "Unknown"),
-        "webpage_url":  getattr(song, "webpage_url",  song.get("webpage_url",  ""))        if not isinstance(song, dict) else song.get("webpage_url",  ""),
-        "duration":     getattr(song, "duration",     song.get("duration",     0))         if not isinstance(song, dict) else song.get("duration",     0),
+        "title":        _g("title",        "Unknown"),
+        "webpage_url":  _g("webpage_url",  ""),
+        "duration":     _g("duration",     0),
         "video_id":     video_id,
-        "thumbnail":    getattr(song, "thumbnail",    song.get("thumbnail"))               if not isinstance(song, dict) else song.get("thumbnail"),
-        "requested_by": getattr(song, "requested_by", song.get("requested_by", "?"))       if not isinstance(song, dict) else song.get("requested_by", "?"),
+        "thumbnail":    _g("thumbnail"),
+        "requested_by": _g("requested_by", "?"),
         "played_at":    datetime.now(timezone.utc).isoformat(),
     }
 
