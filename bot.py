@@ -28,6 +28,7 @@ COGS = [
     "cogs.music",
     "cogs.llm_listener",
     "cogs.cookie_watcher",
+    "cogs.version_announce",
 ]
 
 

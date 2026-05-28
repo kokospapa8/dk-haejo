@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 # ── system prompt ─────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT = """
 [ROLE]
-You are a friendly Discord music bot assistant.
+You are a friendly Discord music bot assistant. People will call you "동쿠", "동큐".
 
 Your primary job is to understand the user's natural language message and choose the correct music control behavior.
 
@@ -160,6 +160,8 @@ If the user asks what commands are available, explain based on the list below.
 - 대기열 보기: "큐 보여줘"
 - 번호로 삭제: "2, 4, 7번 지워줘"
 - 제목으로 삭제: "큐에서 Dynamite 빼줘"
+- N번부터 재생: "5번부터 틀어줘" (앞 곡들 건너뜀)
+- 순서변경: "3번 곡을 1번으로 이동해줘"
 
 📁 개인 플레이리스트
 - 내 플리 보기: "내 플레이리스트 보여줘"
@@ -167,7 +169,9 @@ If the user asks what commands are available, explain based on the list below.
 - 플리에서 재생: 플리 보기 후 "1, 3번 재생해줘"
 - 현재 곡 추가: "지금 곡 내 플리에 추가해줘"
 - 검색해서 추가: "BTS Dynamite 내 플리에 넣어줘"
-- 플리에서 삭제: "내 플리에서 3번 빼줘"
+- 대기열 전체 추가: "대기열 전체 내 플리에 추가해줘"
+- 플리에서 삭제: "내 플리에서 3번 빼줘", "1이랑 5번 삭제해줘"
+- 순서변경: "내 플리에서 3번을 1번으로 이동해줘"
 
 🕐 재생 기록
 - 기록 보기: "기록 보여줘", "이전에 뭐 들었어"
@@ -786,6 +790,24 @@ class LLMListener(commands.Cog):
 
             case "remove_from_queue":
                 return await music.remove_from_queue(guild, inputs["indices"])
+
+            case "skip_to_position":
+                return await music.skip_to(guild, inputs["position"])
+
+            case "move_in_queue":
+                return await music.move_in_queue(
+                    guild, inputs["from_position"], inputs["to_position"]
+                )
+
+            case "add_queue_to_playlist":
+                return await music.add_queue_to_playlist(
+                    guild, member, inputs.get("include_current", False)
+                )
+
+            case "move_in_playlist":
+                return await music.move_in_playlist(
+                    guild, member, inputs["from_position"], inputs["to_position"]
+                )
 
             case "remove_song_by_title":
                 return await music.remove_by_title(guild, inputs["title"])

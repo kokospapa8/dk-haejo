@@ -340,6 +340,94 @@ MUSIC_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "skip_to_position",
+        "description": (
+            "Skip the current song AND all queued songs before position N, "
+            "then immediately start playing from queue position N. "
+            "Use for 'N번부터 틀어줘', 'N번 곡부터 재생해줘', '앞에 N-1개 스킵해줘', 'play from song N'. "
+            "E.g. '5번부터 틀어줘' → position=5  (skips current + queue 1~4, plays queue 5)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "position": {
+                    "type": "integer",
+                    "description": "1-based queue position number to start playing from.",
+                    "minimum": 1,
+                },
+            },
+            "required": ["position"],
+        },
+    },
+    {
+        "name": "move_in_queue",
+        "description": (
+            "Move a song from one queue position to another. "
+            "Use for '3번 곡을 1번으로 이동해줘', '5번을 2번 자리로 옮겨줘', '3번을 맨 앞으로'. "
+            "from_position = current position, to_position = target position (both 1-based)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from_position": {
+                    "type": "integer",
+                    "description": "Current 1-based queue position of the song to move.",
+                    "minimum": 1,
+                },
+                "to_position": {
+                    "type": "integer",
+                    "description": "Target 1-based queue position to move the song to.",
+                    "minimum": 1,
+                },
+            },
+            "required": ["from_position", "to_position"],
+        },
+    },
+    {
+        "name": "add_queue_to_playlist",
+        "description": (
+            "Add ALL songs currently waiting in the queue to the requesting user's OWN playlist. "
+            "Use for '대기열 전체 내 플리에 추가해줘', '큐에 있는 곡 다 플레이리스트에 넣어줘', "
+            "'add all queued songs to my playlist'. "
+            "Set include_current=true when user says '지금 곡 포함해서' or 'current song too'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_current": {
+                    "type": "boolean",
+                    "description": "If true, also add the currently playing song. Default false.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "move_in_playlist",
+        "description": (
+            "Move a song within the requesting user's OWN playlist from one position to another. "
+            "Cannot edit another user's playlist. "
+            "Use for '내 플리에서 3번을 1번으로 이동해줘', '5번을 2번 자리로 옮겨줘', '3번을 맨 앞으로'. "
+            "from_position = current position, to_position = target position (both 1-based)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from_position": {
+                    "type": "integer",
+                    "description": "Current 1-based position of the song in the playlist.",
+                    "minimum": 1,
+                },
+                "to_position": {
+                    "type": "integer",
+                    "description": "Target 1-based position to move the song to.",
+                    "minimum": 1,
+                },
+            },
+            "required": ["from_position", "to_position"],
+        },
+    },
+    {
         "name": "join_voice_channel",
         "description": "Make the bot join the user's current voice channel. Use for '들어와', 'join', 'connect'.",
         "input_schema": {"type": "object", "properties": {}},

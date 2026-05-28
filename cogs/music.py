@@ -576,6 +576,99 @@ class Music(commands.Cog):
         """Return recent playback history for this guild."""
         return hist.get_history(guild.id, limit)
 
+    async def skip_to(self, guild: discord.Guild, position: int) -> str:
+        """Skip to queue position N (1-based). Removes items 1..N-1, then skips current."""
+        vc = guild.voice_client
+        if not vc or (not vc.is_playing() and not vc.is_paused()):
+            return "⚠️ 현재 재생 중인 곡이 없습니다."
+        queue = self._get_queue(guild.id)
+        if not queue.queue:
+            return "⚠️ 대기열이 비어 있습니다."
+        if position < 1 or position > len(queue.queue):
+            return f"❌ 올바른 번호를 입력해 주세요. (대기열에 {len(queue.queue)}곡 있음)"
+
+        if position > 1:
+            removed = await queue.remove_multiple(list(range(position - 1)))
+            skipped = len(removed) + 1
+        else:
+            skipped = 1
+
+        next_title = queue.queue[0].title if queue.queue else "?"
+        vc.stop()  # triggers _after → _play_next
+        return f"⏭ {skipped}곡을 건너뜁니다. **{next_title}** 부터 재생합니다."
+
+    async def add_queue_to_playlist(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        include_current: bool = False,
+    ) -> str:
+        """Add all queued songs (and optionally the current song) to the member's playlist."""
+        queue = self._get_queue(guild.id)
+        songs_to_add: list[Song] = []
+        if include_current and queue.current:
+            songs_to_add.append(queue.current)
+        songs_to_add.extend(list(queue.queue))
+
+        if not songs_to_add:
+            return "⚠️ 대기열이 비어 있습니다."
+
+        new_count, dup_count, cap_count = plist.add_songs(
+            guild.id, str(member.id), member.display_name, songs_to_add
+        )
+        _, current_songs = plist.get_playlist(guild.id, str(member.id))
+
+        parts: list[str] = []
+        if new_count:
+            parts.append(f"✅ {new_count}곡 신규 추가")
+        if dup_count:
+            parts.append(f"🔄 {dup_count}곡 이미 있음(맨 뒤로 이동)")
+        if cap_count:
+            parts.append(f"⚠️ {cap_count}곡 용량 초과로 스킵")
+        summary = " · ".join(parts) if parts else "변경 없음"
+        return f"{summary}\n📁 내 플레이리스트: 총 {len(current_songs)}곡"
+
+    async def move_in_playlist(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        from_pos: int,
+        to_pos: int,
+    ) -> str:
+        """Move a song within the member's own playlist from from_pos to to_pos (1-based)."""
+        user_id = str(member.id)
+        _, songs = plist.get_playlist(guild.id, user_id)
+        n = len(songs)
+        if n == 0:
+            return "⚠️ 플레이리스트가 비어 있습니다."
+        if not (1 <= from_pos <= n):
+            return f"❌ {from_pos}번 곡을 찾을 수 없습니다. (플레이리스트에 {n}곡 있음)"
+        if not (1 <= to_pos <= n):
+            return f"❌ 이동할 위치 {to_pos}번이 범위를 벗어납니다. (플레이리스트에 {n}곡 있음)"
+        if from_pos == to_pos:
+            return f"⚠️ 이미 {from_pos}번 위치에 있습니다."
+        song = plist.move_song(guild.id, user_id, from_pos - 1, to_pos - 1)
+        if song is None:
+            return "❌ 이동에 실패했습니다."
+        return f"↕️ **{song['title']}** 을(를) {from_pos}번 → {to_pos}번으로 이동했습니다."
+
+    async def move_in_queue(self, guild: discord.Guild, from_pos: int, to_pos: int) -> str:
+        """Move a song from from_pos to to_pos (1-based)."""
+        queue = self._get_queue(guild.id)
+        n = len(queue.queue)
+        if n == 0:
+            return "⚠️ 대기열이 비어 있습니다."
+        if not (1 <= from_pos <= n):
+            return f"❌ {from_pos}번 곡을 찾을 수 없습니다. (대기열에 {n}곡 있음)"
+        if not (1 <= to_pos <= n):
+            return f"❌ 이동할 위치 {to_pos}번이 범위를 벗어납니다. (대기열에 {n}곡 있음)"
+        if from_pos == to_pos:
+            return f"⚠️ 이미 {from_pos}번 위치에 있습니다."
+        song = await queue.move(from_pos - 1, to_pos - 1)
+        if song is None:
+            return "❌ 이동에 실패했습니다."
+        return f"↕️ **{song.title}** 을(를) {from_pos}번 → {to_pos}번으로 이동했습니다."
+
     async def remove_by_title(self, guild: discord.Guild, title: str) -> str:
         """Remove the first queue entry whose title contains *title* (case-insensitive)."""
         queue = self._get_queue(guild.id)

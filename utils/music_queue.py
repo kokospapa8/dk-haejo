@@ -88,6 +88,16 @@ class MusicQueue:
                     return self.queue.pop(i)
             return None
 
+    async def move(self, from_index: int, to_index: int) -> Optional[Song]:
+        """Move a song from from_index to to_index (0-based). Returns the song, or None."""
+        async with self._lock:
+            if not (0 <= from_index < len(self.queue)):
+                return None
+            song = self.queue.pop(from_index)
+            insert_at = max(0, min(to_index, len(self.queue)))
+            self.queue.insert(insert_at, song)
+            return song
+
     def clear(self) -> None:
         self.queue.clear()
         self.current = None

@@ -147,6 +147,90 @@ def remove_songs(
     return removed
 
 
+def add_songs(
+    guild_id: int,
+    user_id: str,
+    username: str,
+    songs: list[Any],
+) -> tuple[int, int, int]:
+    """Add multiple songs to the user's playlist in one atomic write.
+
+    Returns (new_count, dup_count, cap_count):
+      new_count  — songs newly added
+      dup_count  — songs that already existed (moved to end)
+      cap_count  — songs skipped because the cap was reached
+    """
+    data = _load()
+    entry = _user_entry(data, guild_id, user_id)
+    entry["username"] = username
+
+    existing = entry["songs"]
+    existing_ids: set[str] = {s.get("video_id", "") for s in existing if s.get("video_id")}
+
+    new_count = dup_count = cap_count = 0
+
+    for song in songs:
+        video_id: str = (
+            getattr(song, "video_id", None)
+            or (song.get("video_id") if isinstance(song, dict) else "")
+            or ""
+        )
+
+        def _g(k: str, default: Any = None) -> Any:
+            return song.get(k, default) if isinstance(song, dict) else getattr(song, k, default)
+
+        already_existed = bool(video_id and video_id in existing_ids)
+
+        if already_existed:
+            existing[:] = [s for s in existing if s.get("video_id") != video_id]
+            existing_ids.discard(video_id)
+            dup_count += 1
+        elif len(existing) >= MAX_PER_USER:
+            cap_count += 1
+            continue
+        else:
+            new_count += 1
+
+        existing.append({
+            "title":       _g("title",       "Unknown") or "Unknown",
+            "webpage_url": _g("webpage_url", "")        or "",
+            "duration":    _g("duration",    0)         or 0,
+            "video_id":    video_id,
+            "thumbnail":   _g("thumbnail"),
+            "added_at":    datetime.now(timezone.utc).isoformat(),
+        })
+        if video_id:
+            existing_ids.add(video_id)
+
+    entry["songs"] = existing[:MAX_PER_USER]
+    _save(data)
+    log.debug(
+        "playlist: add_songs  guild=%s  user=%s  new=%d  dup=%d  cap=%d",
+        guild_id, user_id, new_count, dup_count, cap_count,
+    )
+    return new_count, dup_count, cap_count
+
+
+def move_song(
+    guild_id: int,
+    user_id: str,
+    from_index: int,
+    to_index: int,
+) -> dict | None:
+    """Move a song from from_index to to_index (0-based). Returns the moved song, or None."""
+    data = _load()
+    entry = _user_entry(data, guild_id, user_id)
+    songs = entry["songs"]
+
+    if not (0 <= from_index < len(songs)):
+        return None
+    song = songs.pop(from_index)
+    insert_at = max(0, min(to_index, len(songs)))
+    songs.insert(insert_at, song)
+    _save(data)
+    return song
+
+
 def get_playlist(guild_id: int, user_id: str) -> tuple[str, list[dict]]:
     """Return (username, songs) for this user. Username is '' if no playlist yet."""
     data = _load()
