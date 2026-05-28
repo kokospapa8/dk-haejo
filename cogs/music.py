@@ -31,8 +31,15 @@ class Music(commands.Cog):
         self._text_channels: dict[int, discord.TextChannel] = {}
         # 유휴 타임아웃 태스크 (guild_id → Task)
         self._idle_tasks: dict[int, asyncio.Task] = {}
+        # 길드별 play lock — 동시 play 요청이 오면 is_playing() race condition 방지
+        self._play_locks: dict[int, asyncio.Lock] = {}
 
     # ── internal helpers ──────────────────────────────────────────────────────
+
+    def _get_play_lock(self, guild_id: int) -> asyncio.Lock:
+        if guild_id not in self._play_locks:
+            self._play_locks[guild_id] = asyncio.Lock()
+        return self._play_locks[guild_id]
 
     def _get_queue(self, guild_id: int) -> MusicQueue:
         if guild_id not in self._queues:
@@ -173,70 +180,70 @@ class Music(commands.Cog):
         query: str,
         text_channel: Optional[discord.TextChannel] = None,
     ) -> str:
-        # 텍스트 채널 저장 (재생 중 에러 알림용)
         if text_channel:
             self._text_channels[guild.id] = text_channel
 
-        # Auto-join if not connected
-        if not guild.voice_client:
-            ok, msg = await self.join_channel(member)
-            if not ok:
-                return msg
+        async with self._get_play_lock(guild.id):
+            # Auto-join if not connected
+            if not guild.voice_client:
+                ok, msg = await self.join_channel(member)
+                if not ok:
+                    return msg
 
-        # Search YouTube for metadata (fast — no stream URL fetched yet)
-        try:
-            meta = await search_youtube(query)
-        except Exception as exc:
-            log.exception("YouTube search failed for query %r", query)
-            err = str(exc)
+            # Search YouTube for metadata (fast — no stream URL fetched yet)
+            try:
+                meta = await search_youtube(query)
+            except Exception as exc:
+                log.exception("YouTube search failed for query %r", query)
+                err = str(exc)
 
-            # 검색 실패 시 봇이 아무것도 재생 안 하고 있으면 즉시 퇴장
+                # 검색 실패 시 봇이 아무것도 재생 안 하고 있으면 즉시 퇴장
+                vc = guild.voice_client
+                if vc and not vc.is_playing() and not vc.is_paused():
+                    queue = self._get_queue(guild.id)
+                    if not queue.queue:
+                        self._cancel_idle_timer(guild.id)
+                        await vc.disconnect()
+
+                if "Sign in to confirm" in err or "not a bot" in err:
+                    return (
+                        "❌ YouTube가 봇으로 감지했습니다. "
+                        "잠시 후 다시 시도하거나 관리자에게 문의해 주세요."
+                    )
+                if "no longer supported" in err.lower():
+                    return (
+                        "❌ YouTube 클라이언트 버전 문제가 발생했습니다. "
+                        "관리자에게 문의해 주세요."
+                    )
+                if "Video unavailable" in err or "not available" in err.lower():
+                    return f"❌ **{query}** — 해당 영상을 재생할 수 없습니다 (지역 제한 또는 삭제된 영상)."
+                if "Private video" in err:
+                    return "❌ 비공개 영상은 재생할 수 없습니다."
+                short = err.split("\n")[0][:200]
+                return f"❌ 검색 실패: {short}"
+
+            # Build Song — no stream URL stored; fetched fresh in _play_audio()
+            song = Song(
+                title=meta["title"],
+                webpage_url=meta["webpage_url"],
+                duration=meta["duration"],
+                thumbnail=meta.get("thumbnail"),
+                requested_by=member.display_name,
+                video_id=meta.get("video_id", ""),
+            )
+            queue = self._get_queue(guild.id)
             vc = guild.voice_client
-            if vc and not vc.is_playing() and not vc.is_paused():
-                queue = self._get_queue(guild.id)
-                if not queue.queue:  # 큐도 비어있으면 나감
-                    self._cancel_idle_timer(guild.id)
-                    await vc.disconnect()
 
-            if "Sign in to confirm" in err or "not a bot" in err:
-                return (
-                    "❌ YouTube가 봇으로 감지했습니다. "
-                    "잠시 후 다시 시도하거나 관리자에게 문의해 주세요."
-                )
-            if "no longer supported" in err.lower():
-                return (
-                    "❌ YouTube 클라이언트 버전 문제가 발생했습니다. "
-                    "관리자에게 문의해 주세요."
-                )
-            if "Video unavailable" in err or "not available" in err.lower():
-                return f"❌ **{query}** — 해당 영상을 재생할 수 없습니다 (지역 제한 또는 삭제된 영상)."
-            if "Private video" in err:
-                return "❌ 비공개 영상은 재생할 수 없습니다."
-            short = err.split("\n")[0][:200]
-            return f"❌ 검색 실패: {short}"
-
-        # Build Song — no stream URL stored; fetched fresh in _play_audio()
-        song = Song(
-            title=meta["title"],
-            webpage_url=meta["webpage_url"],
-            duration=meta["duration"],
-            thumbnail=meta.get("thumbnail"),
-            requested_by=member.display_name,
-            video_id=meta.get("video_id", ""),
-        )
-        queue = self._get_queue(guild.id)
-        vc = guild.voice_client
-
-        if not vc.is_playing() and not vc.is_paused():
-            queue.current = song
-            await self._play_audio(guild, song)
-            dur = self._format_duration(song.duration)
-            return f"▶️ **{song.title}** `[{dur}]` 재생 중"
-        else:
-            await queue.add(song)
-            pos = len(queue.queue)
-            dur = self._format_duration(song.duration)
-            return f"✅ **{song.title}** `[{dur}]` → 큐 #{pos} 추가됨"
+            if not vc.is_playing() and not vc.is_paused():
+                queue.current = song
+                await self._play_audio(guild, song)
+                dur = self._format_duration(song.duration)
+                return f"▶️ **{song.title}** `[{dur}]` 재생 중"
+            else:
+                await queue.add(song)
+                pos = len(queue.queue)
+                dur = self._format_duration(song.duration)
+                return f"✅ **{song.title}** `[{dur}]` → 큐 #{pos} 추가됨"
 
     async def play_songs(
         self,
@@ -254,22 +261,16 @@ class Music(commands.Cog):
         if text_channel:
             self._text_channels[guild.id] = text_channel
 
-        # Auto-join if not connected
-        if not guild.voice_client:
-            ok, msg = await self.join_channel(member)
-            if not ok:
-                return msg
-
-        # Search all queries in parallel
+        # YouTube 검색은 lock 밖에서 병렬로 — I/O 시간이 길어 lock을 오래 잡으면 안 됨
         log.info("play_songs: searching %d queries in parallel", len(queries))
-        results = await asyncio.gather(
+        raw_results = await asyncio.gather(
             *[search_youtube(q) for q in queries],
             return_exceptions=True,
         )
 
         songs: list[Song] = []
         failed: list[str] = []
-        for q, result in zip(queries, results):
+        for q, result in zip(queries, raw_results):
             if isinstance(result, Exception):
                 log.warning("play_songs: search failed for %r: %s", q, result)
                 failed.append(q)
@@ -286,21 +287,29 @@ class Music(commands.Cog):
         if not songs:
             return "❌ 검색된 곡이 없습니다."
 
-        queue = self._get_queue(guild.id)
-        vc = guild.voice_client
-        play_first = not vc.is_playing() and not vc.is_paused()
+        # 큐 추가 + 재생 시작은 lock 안에서 — is_playing() race 방지
+        async with self._get_play_lock(guild.id):
+            # Auto-join if not connected
+            if not guild.voice_client:
+                ok, msg = await self.join_channel(member)
+                if not ok:
+                    return msg
 
-        lines: list[str] = []
-        for i, song in enumerate(songs):
-            dur = self._format_duration(song.duration)
-            if i == 0 and play_first:
-                queue.current = song
-                await self._play_audio(guild, song)
-                lines.append(f"▶️ **{song.title}** `[{dur}]` 재생 중")
-            else:
-                await queue.add(song)
-                pos = len(queue.queue)
-                lines.append(f"✅ **{song.title}** `[{dur}]` → 큐 #{pos}")
+            queue = self._get_queue(guild.id)
+            vc = guild.voice_client
+            play_first = not vc.is_playing() and not vc.is_paused()
+
+            lines: list[str] = []
+            for i, song in enumerate(songs):
+                dur = self._format_duration(song.duration)
+                if i == 0 and play_first:
+                    queue.current = song
+                    await self._play_audio(guild, song)
+                    lines.append(f"▶️ **{song.title}** `[{dur}]` 재생 중")
+                else:
+                    await queue.add(song)
+                    pos = len(queue.queue)
+                    lines.append(f"✅ **{song.title}** `[{dur}]` → 큐 #{pos}")
 
         if failed:
             failed_str = ", ".join(f"`{q}`" for q in failed)
@@ -423,11 +432,6 @@ class Music(commands.Cog):
         if text_channel:
             self._text_channels[guild.id] = text_channel
 
-        if not guild.voice_client:
-            ok, msg = await self.join_channel(member)
-            if not ok:
-                return msg
-
         selected = [
             search_results[i - 1]
             for i in indices
@@ -448,21 +452,27 @@ class Music(commands.Cog):
             for r in selected
         ]
 
-        queue = self._get_queue(guild.id)
-        vc = guild.voice_client
-        play_first = not vc.is_playing() and not vc.is_paused()
+        async with self._get_play_lock(guild.id):
+            if not guild.voice_client:
+                ok, msg = await self.join_channel(member)
+                if not ok:
+                    return msg
 
-        lines: list[str] = []
-        for i, song in enumerate(songs):
-            dur = self._format_duration(song.duration)
-            if i == 0 and play_first:
-                queue.current = song
-                await self._play_audio(guild, song)
-                lines.append(f"▶️ **{song.title}** `[{dur}]` 재생 중")
-            else:
-                await queue.add(song)
-                pos = len(queue.queue)
-                lines.append(f"✅ **{song.title}** `[{dur}]` → 큐 #{pos}")
+            queue = self._get_queue(guild.id)
+            vc = guild.voice_client
+            play_first = not vc.is_playing() and not vc.is_paused()
+
+            lines: list[str] = []
+            for i, song in enumerate(songs):
+                dur = self._format_duration(song.duration)
+                if i == 0 and play_first:
+                    queue.current = song
+                    await self._play_audio(guild, song)
+                    lines.append(f"▶️ **{song.title}** `[{dur}]` 재생 중")
+                else:
+                    await queue.add(song)
+                    pos = len(queue.queue)
+                    lines.append(f"✅ **{song.title}** `[{dur}]` → 큐 #{pos}")
 
         return "\n".join(lines)
 
