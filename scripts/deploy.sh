@@ -62,6 +62,9 @@ git -c safe.directory="$REPO" reset --hard origin/main
 # cookies.txt 없으면 빈 파일 생성 (Docker 마운트 오류 방지)
 touch "$REPO/cookies.txt"
 
+# data 디렉토리 사전 생성 (bind mount 전 존재해야 queue/history 저장 가능)
+mkdir -p "$REPO/data"
+
 docker compose build --no-cache
 docker compose up -d --remove-orphans
 docker image prune -f
