@@ -1,6 +1,5 @@
 ### 변경사항
 
-- ci: LASTFM_API_KEY를 EC2 .env 동기화에 추가
-- feat: Last.fm 기반 음악 추천 시스템 + 큐 자동저장/복구 + 특별응답
-- feat: 창조자/아빠 질문에 대한 특별 응답 추가
-- feat: 대기열 자동 저장 및 재시작 후 복구
+- fix: Last.fm 추천 오류 수정 + 현재 곡 fallback + 한국불곰 특별응답
+- feat: 화나거나 황당할 때 부들부들 냥~ 반응 추가
+- feat: 자동추천 모드 (auto-recommend toggle)
