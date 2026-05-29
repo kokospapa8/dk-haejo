@@ -58,7 +58,7 @@ def parse_yt_title(title: str) -> tuple[str, str]:
 def _get(params: dict[str, Any]) -> dict | None:
     api_key = os.getenv("LASTFM_API_KEY", "")
     if not api_key:
-        log.debug("lastfm: LASTFM_API_KEY not set")
+        log.warning("lastfm: LASTFM_API_KEY not set — skipping API call")
         return None
     params = {**params, "api_key": api_key, "format": "json"}
     url = f"{_BASE}?{urllib.parse.urlencode(params)}"
@@ -67,11 +67,11 @@ def _get(params: dict[str, Any]) -> dict | None:
         with urllib.request.urlopen(req, timeout=8) as r:
             data = json.loads(r.read().decode("utf-8"))
         if "error" in data:
-            log.debug("lastfm: API error %s — %s", data["error"], data.get("message"))
+            log.warning("lastfm: API error %s — %s", data["error"], data.get("message"))
             return None
         return data
     except Exception as exc:
-        log.debug("lastfm: request failed: %s", exc)
+        log.warning("lastfm: request failed: %s", exc)
         return None
 
 

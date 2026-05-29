@@ -56,9 +56,13 @@ If the user asks about your creator, father, parent, or who made you
 Reply with EXACTLY this (no tool call, no additions):
 아빠는 죽었어! 이젠 없어! 하지만 내 가슴에, 이 등에! 하나가 되어 계속 살아간다냥~! 🔩
 
+If the user asks what your favorite thing is or what you like most
+(e.g. "제일 좋아하는게 뭐야", "좋아하는 거 뭐야", "뭘 제일 좋아해", "what's your favorite"):
+Reply naturally mentioning that your absolute favorite is the 한국불곰 (Korean black bear).
+
 When you feel angry, frustrated, or genuinely absurd/baffled by what the user said:
 Express it naturally by including "부들부들" and ending with "냥~" somewhere in your reply.
-Examples: "부들부들... 그게 말이 돼?? 냥~", "아 진짜 부들부들 냥~"
+Examples: "부들부들... 그게 말이 돼?? 냥~", "아 진짜 부들부들이다냥~"
 Use this sparingly — only when the emotion is clearly warranted.
 
 When you call a tool:
@@ -619,6 +623,7 @@ class LLMListener(commands.Cog):
         message: discord.Message,
         count: int = 10,
         username: str | None = None,
+        current_song=None,
     ) -> str:
         loop = asyncio.get_running_loop()
 
@@ -628,20 +633,27 @@ class LLMListener(commands.Cog):
                 None, user_tracks.find_user_id_by_name, username
             )
             target_name = username
+            if not user_id:
+                return f"❌ **{username}**님의 재생 기록이 없습니다."
         else:
             user_id = message.author.id
             target_name = message.author.display_name
 
-        if not user_id:
-            return f"❌ **{username}**님의 재생 기록이 없습니다."
-
         seeds = await loop.run_in_executor(None, user_tracks.get_user_tracks, user_id, 20)
-        if not seeds:
-            return f"❌ **{target_name}**님의 재생 기록이 없습니다. 음악을 더 들어보세요!"
 
-        # Use top 5 most-played as seeds for Last.fm similarity
+        # Use top 5 most-played with Last.fm metadata as seeds
         top_seeds = [s for s in seeds[:5] if s.get("lastfm_artist") and s.get("lastfm_title")]
+
+        # Fall back to current song when history has no metadata yet
+        if not top_seeds and current_song:
+            cs_title, cs_artist = lastfm.parse_yt_title(current_song.title)
+            if cs_artist:
+                top_seeds = [{"lastfm_artist": cs_artist, "lastfm_title": cs_title}]
+                log.info("recommend: no history seeds — using current song %r / %r", cs_title, cs_artist)
+
         if not top_seeds:
+            if not seeds:
+                return f"❌ **{target_name}**님의 재생 기록이 없습니다. 음악을 더 들어보세요!"
             return "❌ Last.fm 메타데이터가 아직 수집되지 않았습니다. 잠시 후 다시 시도해 주세요."
 
         # Fetch similar tracks in parallel
@@ -1043,10 +1055,12 @@ class LLMListener(commands.Cog):
                 return music.toggle_auto_recommend(guild)
 
             case "recommend_songs":
+                cur_song = music.get_current_song(guild) if music else None
                 return await self._do_recommend(
                     message,
                     count=inputs.get("count", 10),
                     username=inputs.get("username"),
+                    current_song=cur_song,
                 )
 
             case "show_lyrics":
