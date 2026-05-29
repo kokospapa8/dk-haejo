@@ -438,6 +438,34 @@ MUSIC_TOOLS: list[dict] = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "recommend_songs",
+        "description": (
+            "Recommend songs based on the user's play history using Last.fm. "
+            "Use when the user asks for recommendations. "
+            "E.g. '추천해줘', '취향에 맞는 노래 틀어줘', '비슷한 노래 추천해줘', 'recommend songs', '추천곡 알려줘'. "
+            "Optionally specify a target user by name and/or number of songs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": "Number of songs to recommend (1–30). Default 10.",
+                    "minimum": 1,
+                    "maximum": 30,
+                },
+                "username": {
+                    "type": "string",
+                    "description": (
+                        "Target user's display name to base recommendations on. "
+                        "Omit to use the requesting user's own history."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "show_lyrics",
         "description": (
             "Show the lyrics of the currently playing song. "

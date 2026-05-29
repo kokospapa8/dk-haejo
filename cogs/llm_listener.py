@@ -31,8 +31,9 @@ import discord
 from discord.ext import commands
 
 from cogs.music import Music
+from utils import lastfm, user_tracks
 from utils.llm_tools import MUSIC_TOOLS
-from utils.youtube import search_youtube_multi
+from utils.youtube import search_youtube, search_youtube_multi
 
 log = logging.getLogger(__name__)
 
@@ -606,6 +607,95 @@ class LLMListener(commands.Cog):
         }
         return display
 
+    # ── recommendation helper ─────────────────────────────────────────────────
+
+    async def _do_recommend(
+        self,
+        message: discord.Message,
+        count: int = 10,
+        username: str | None = None,
+    ) -> str:
+        loop = asyncio.get_running_loop()
+
+        # Resolve target user
+        if username:
+            user_id = await loop.run_in_executor(
+                None, user_tracks.find_user_id_by_name, username
+            )
+            target_name = username
+        else:
+            user_id = message.author.id
+            target_name = message.author.display_name
+
+        if not user_id:
+            return f"❌ **{username}**님의 재생 기록이 없습니다."
+
+        seeds = await loop.run_in_executor(None, user_tracks.get_user_tracks, user_id, 20)
+        if not seeds:
+            return f"❌ **{target_name}**님의 재생 기록이 없습니다. 음악을 더 들어보세요!"
+
+        # Use top 5 most-played as seeds for Last.fm similarity
+        top_seeds = [s for s in seeds[:5] if s.get("lastfm_artist") and s.get("lastfm_title")]
+        if not top_seeds:
+            return "❌ Last.fm 메타데이터가 아직 수집되지 않았습니다. 잠시 후 다시 시도해 주세요."
+
+        # Fetch similar tracks in parallel
+        similar_tasks = [
+            loop.run_in_executor(
+                None, lastfm.get_similar_tracks,
+                s["lastfm_artist"], s["lastfm_title"], 15,
+            )
+            for s in top_seeds
+        ]
+        raw_results = await asyncio.gather(*similar_tasks, return_exceptions=True)
+
+        # Aggregate, deduplicate, exclude already-heard tracks
+        played_keys = {
+            f"{s.get('lastfm_artist','').lower()}|{s.get('lastfm_title','').lower()}"
+            for s in seeds
+        }
+        seen: set[str] = set()
+        candidates: list[dict] = []
+        for result in raw_results:
+            if isinstance(result, Exception):
+                continue
+            for t in result:
+                key = f"{t['artist'].lower()}|{t['title'].lower()}"
+                if key not in seen and key not in played_keys:
+                    seen.add(key)
+                    candidates.append(t)
+
+        if not candidates:
+            return "❌ Last.fm에서 추천곡을 찾을 수 없습니다."
+
+        recs = candidates[:count]
+
+        # Search YouTube for each recommendation in parallel
+        yt_results = await asyncio.gather(
+            *[search_youtube(f"{r['artist']} {r['title']}") for r in recs],
+            return_exceptions=True,
+        )
+
+        # Build results list (skip YouTube search failures)
+        results: list[dict] = []
+        for yt in yt_results:
+            if isinstance(yt, Exception) or not yt:
+                continue
+            results.append(yt)
+
+        if not results:
+            return "❌ YouTube에서 추천곡을 찾을 수 없습니다."
+
+        lines = [f"🎵 **{target_name}**님 취향 기반 추천곡 ({len(results)}곡)\n"]
+        for i, r in enumerate(results, 1):
+            dur = _fmt_dur(r["duration"])
+            lines.append(f"`{i}.` **{r['title']}** `[{dur}]`")
+        lines.append("\n번호로 골라주세요  예: **\"1, 3번 추가해줘\"** / **\"전부 넣어줘\"**")
+
+        display = "\n".join(lines)
+        self._search_context[message.channel.id] = {"results": results, "display": display}
+        return display
+
     # ── lyrics helper ─────────────────────────────────────────────────────────
 
     async def _do_show_lyrics(
@@ -943,6 +1033,13 @@ class LLMListener(commands.Cog):
 
             case "leave_voice_channel":
                 return await music.leave(guild)
+
+            case "recommend_songs":
+                return await self._do_recommend(
+                    message,
+                    count=inputs.get("count", 10),
+                    username=inputs.get("username"),
+                )
 
             case "show_lyrics":
                 return await self._do_show_lyrics(message, music)

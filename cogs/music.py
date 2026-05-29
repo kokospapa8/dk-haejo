@@ -234,6 +234,7 @@ class Music(commands.Cog):
                 thumbnail=meta.get("thumbnail"),
                 requested_by=member.display_name,
                 video_id=meta.get("video_id", ""),
+                requester_id=member.id,
             )
             queue = self._get_queue(guild.id)
             vc = guild.voice_client
@@ -287,6 +288,7 @@ class Music(commands.Cog):
                 thumbnail=result.get("thumbnail"),
                 requested_by=member.display_name,
                 video_id=result.get("video_id", ""),
+                requester_id=member.id,
             ))
 
         if not songs:
@@ -461,6 +463,7 @@ class Music(commands.Cog):
                 thumbnail=r.get("thumbnail"),
                 requested_by=member.display_name,
                 video_id=r.get("video_id", ""),
+                requester_id=member.id,
             )
             for r in selected
         ]

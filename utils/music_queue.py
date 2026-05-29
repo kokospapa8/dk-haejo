@@ -24,6 +24,7 @@ class Song:
     thumbnail: Optional[str]
     requested_by: str  # Discord display name
     video_id: str = ""
+    requester_id: int = 0  # Discord user ID (0 = unknown)
     # Stream URL is NOT stored here — it is fetched fresh in _play_audio()
     # so queued songs never hit 403 "stream URL expired" errors (~6 h TTL).
 

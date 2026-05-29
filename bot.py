@@ -32,6 +32,7 @@ COGS = [
     "cogs.music_panel",
     "cogs.dj_announce",
     "cogs.queue_saver",
+    "cogs.track_collector",
 ]
 
 
