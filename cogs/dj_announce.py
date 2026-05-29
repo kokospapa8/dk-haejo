@@ -1,8 +1,9 @@
 """
 DJ Announce — sends a one-liner DJ comment to the music channel each time a new song starts.
 
-Skips announce on pause/resume/volume/repeat state changes by tracking the
-current song's webpage_url per guild. Only fires when the URL actually changes.
+Repeat-aware: tracks all announced URLs per guild session.
+If a song has already been announced (e.g. queue/single repeat), it is skipped.
+The seen-set is cleared when the queue ends so a fresh session re-announces.
 """
 from __future__ import annotations
 
@@ -20,9 +21,10 @@ log = logging.getLogger(__name__)
 _DJ_SYSTEM = (
     "당신은 유쾌하고 재치 있는 디스코드 뮤직봇의 DJ입니다. "
     "다음 곡이 시작될 때 한 줄 멘트를 한국어로 작성합니다. "
-    "규칙: ① 반드시 한 문장, 50자 이내 ② 곡 제목·아티스트·요청자 정보를 자연스럽게 녹여도 좋음 "
+    "규칙: ① 반드시 한 문장, 50자 이내 ② 요청자 정보를 자연스럽게 녹여도 좋음 "
     "③ 매번 다른 스타일(설레는 소개, 추천 이유, 짧은 감상, 유머 등)로 변주 "
-    "④ 이모지 1~2개 포함 ⑤ 큰따옴표나 앞뒤 설명 없이 멘트만 출력."
+    "④ 이모지 1~2개 포함 ⑤ 곡 제목은 멘트에 넣지 말 것 — 별도로 표시됨 "
+    "⑥ 큰따옴표나 앞뒤 설명 없이 멘트만 출력."
 )
 
 
@@ -31,8 +33,8 @@ class DJAnnounce(commands.Cog):
         self.bot = bot
         self._anthropic = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         self._model: str = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-        # guild_id → webpage_url of the last announced song
-        self._last_url: dict[int, str] = {}
+        # guild_id → set of webpage_urls already announced in this session
+        self._seen: dict[int, set[str]] = {}
 
     @commands.Cog.listener()
     async def on_music_state_change(self, guild: discord.Guild) -> None:
@@ -41,13 +43,18 @@ class DJAnnounce(commands.Cog):
             return
 
         song = music.get_current_song(guild)  # type: ignore[union-attr]
+
+        # Queue ended — reset seen set so next session announces fresh
         if not song:
+            self._seen.pop(guild.id, None)
             return
 
-        # Only announce when the song actually changes
-        if self._last_url.get(guild.id) == song.webpage_url:
+        seen = self._seen.setdefault(guild.id, set())
+
+        # Already announced this song in the current session (repeat)
+        if song.webpage_url in seen:
             return
-        self._last_url[guild.id] = song.webpage_url
+        seen.add(song.webpage_url)
 
         ch: Optional[discord.TextChannel] = music._text_channels.get(guild.id)  # type: ignore[union-attr]
         if not ch:
@@ -55,7 +62,7 @@ class DJAnnounce(commands.Cog):
 
         comment = await self._generate(song.title, song.requested_by)
         if comment:
-            await ch.send(comment)
+            await ch.send(f"🎵 **{song.title}**\n{comment}")
 
     async def _generate(self, title: str, requested_by: str) -> Optional[str]:
         kst = datetime.now(timezone(timedelta(hours=9)))
