@@ -292,21 +292,79 @@ def _wiki_fetch_sync(query: str) -> tuple[str, str] | None:
     return None
 
 
+def _parse_yt_title(title: str) -> tuple[str, str]:
+    """Extract (song, artist) from a YouTube video title.
+
+    Handles formats like:
+      "한로로 (HANRORO) - 입춘 (Let Me Love My Youth) [MV]"
+      "BTS (방탄소년단) 'Dynamite' Official MV"
+      "IU (아이유) - Celebrity"
+    Returns (song_title, artist).  Falls back to (title, "") if no separator found.
+    """
+    import re
+
+    def _strip_parens(s: str) -> str:
+        """Remove parenthetical/bracket annotations."""
+        s = re.sub(r'\s*[\(\[][^\)\]]{1,40}[\)\]]', '', s)
+        return s.strip()
+
+    def _strip_tags(s: str) -> str:
+        """Remove common YouTube suffixes like [MV], (Official Video), 4K, etc."""
+        s = re.sub(
+            r'\s*[\[\(]?\s*(?:official\s*(?:mv|video|audio|lyric[s]?)|mv|lyric[s]?|'
+            r'4k|hd|live|performance|visualizer|color\s*coded)\s*[\]\)]?',
+            '', s, flags=re.IGNORECASE,
+        )
+        return s.strip(' -_|·•')
+
+    if ' - ' in title:
+        left, right = title.split(' - ', 1)
+        artist = _strip_parens(left).strip()
+        song   = _strip_tags(_strip_parens(right)).strip()
+    else:
+        artist = ''
+        song   = _strip_tags(_strip_parens(title)).strip()
+
+    return song or title, artist
+
+
 def _fetch_lyrics_sync(title: str) -> str | None:
-    """Search lrclib.net for lyrics by song title. Returns plain lyrics text or None."""
+    """Search lrclib.net for lyrics. Tries multiple query strategies."""
     import json
-    query = urllib.parse.urlencode({"q": title})
-    url = f"https://lrclib.net/api/search?{query}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "DiscordMusicBot/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            results = json.loads(r.read().decode("utf-8"))
-        for item in results:
-            lyrics = item.get("plainLyrics") or ""
-            if lyrics.strip():
-                return lyrics.strip()
-    except Exception as exc:
-        log.debug("lrclib fetch failed for %r: %s", title, exc)
+
+    def _search(params: dict) -> str | None:
+        url = f"https://lrclib.net/api/search?{urllib.parse.urlencode(params)}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "DiscordMusicBot/1.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                results = json.loads(r.read().decode("utf-8"))
+            for item in results:
+                lyrics = (item.get("plainLyrics") or "").strip()
+                if lyrics:
+                    return lyrics
+        except Exception as exc:
+            log.debug("lrclib fetch failed params=%s: %s", params, exc)
+        return None
+
+    song, artist = _parse_yt_title(title)
+
+    # 1. artist + song name (most specific)
+    if artist:
+        result = _search({"track_name": song, "artist_name": artist})
+        if result:
+            return result
+
+    # 2. song name only
+    result = _search({"q": song})
+    if result:
+        return result
+
+    # 3. full original title as fallback
+    if song != title:
+        result = _search({"q": title})
+        if result:
+            return result
+
     return None
 
 
