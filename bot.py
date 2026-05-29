@@ -31,6 +31,7 @@ COGS = [
     "cogs.version_announce",
     "cogs.music_panel",
     "cogs.dj_announce",
+    "cogs.queue_saver",
 ]
 
 

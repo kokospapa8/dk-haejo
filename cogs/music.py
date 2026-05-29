@@ -15,6 +15,7 @@ from yt_dlp.utils import DownloadError
 
 from utils import history as hist
 from utils import playlist as plist
+from utils import queue_persist
 from utils.music_queue import MusicQueue, RepeatMode, Song
 from utils.youtube import FFMPEG_OPTIONS, get_stream_url, search_youtube, search_youtube_multi
 
@@ -355,6 +356,7 @@ class Music(commands.Cog):
             return "⚠️ 봇이 음성 채널에 없습니다."
         queue = self._get_queue(guild.id)
         queue.clear()
+        queue_persist.clear(guild.id)   # 명시적 정지 → 저장된 큐 삭제
         self._cancel_idle_timer(guild.id)
         vc.stop()
         await self.bot.change_presence(activity=None)  # clear "Listening to" status
