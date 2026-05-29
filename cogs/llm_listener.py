@@ -23,6 +23,7 @@ import logging
 import os
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import anthropic
@@ -482,6 +483,9 @@ class LLMListener(commands.Cog):
         else:
             messages = [{"role": "user", "content": enriched_text}]
 
+        kst = datetime.now(timezone(timedelta(hours=9)))
+        now_str = kst.strftime("%Y년 %m월 %d일 %H시 %M분 (KST, %A)")
+
         try:
             response = await self._anthropic.messages.create(
                 model=self._model,
@@ -492,7 +496,11 @@ class LLMListener(commands.Cog):
                         "text": _SYSTEM_PROMPT,
                         # Cache the static system prompt to save API cost
                         "cache_control": {"type": "ephemeral"},
-                    }
+                    },
+                    {
+                        "type": "text",
+                        "text": f"현재 날짜·시간: {now_str}",
+                    },
                 ],
                 tools=MUSIC_TOOLS,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]

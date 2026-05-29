@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import anthropic
@@ -57,7 +58,9 @@ class DJAnnounce(commands.Cog):
             await ch.send(comment)
 
     async def _generate(self, title: str, requested_by: str) -> Optional[str]:
-        prompt = f"곡: {title} / 요청자: {requested_by}"
+        kst = datetime.now(timezone(timedelta(hours=9)))
+        now_str = kst.strftime("%Y년 %m월 %d일 %H시 %M분")
+        prompt = f"현재 날짜·시간: {now_str}\n곡: {title} / 요청자: {requested_by}"
         try:
             resp = await self._anthropic.messages.create(
                 model=self._model,
