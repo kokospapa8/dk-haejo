@@ -97,7 +97,9 @@ class Music(commands.Cog):
             asyncio.run_coroutine_threadsafe(self._play_next(guild), self.bot.loop)
 
         self._cancel_idle_timer(guild.id)  # 재생 시작 → 타이머 취소
+        queue.on_play()
         vc.play(source, after=_after)
+        self.bot.dispatch("music_state_change", guild)
 
         # Persist to playback history (non-blocking — fast file write)
         try:
@@ -123,6 +125,7 @@ class Music(commands.Cog):
         else:
             # 큐 소진 → 유휴 타임아웃 시작
             self._start_idle_timer(guild)
+            self.bot.dispatch("music_state_change", guild)
 
     # ── idle timeout ──────────────────────────────────────────────────────────
 
@@ -243,6 +246,7 @@ class Music(commands.Cog):
                 await queue.add(song)
                 pos = len(queue.queue)
                 dur = self._format_duration(song.duration)
+                self.bot.dispatch("music_state_change", guild)
                 return f"✅ **{song.title}** `[{dur}]` → 큐 #{pos} 추가됨"
 
     async def play_songs(
@@ -315,20 +319,25 @@ class Music(commands.Cog):
             failed_str = ", ".join(f"`{q}`" for q in failed)
             lines.append(f"\n⚠️ 검색 실패: {failed_str}")
 
+        self.bot.dispatch("music_state_change", guild)
         return "\n".join(lines)
 
     async def pause(self, guild: discord.Guild) -> str:
         vc = guild.voice_client
         if not vc or not vc.is_playing():
             return "⚠️ 현재 재생 중인 곡이 없습니다."
+        self._get_queue(guild.id).on_pause()
         vc.pause()
+        self.bot.dispatch("music_state_change", guild)
         return "⏸ 일시정지했습니다."
 
     async def resume(self, guild: discord.Guild) -> str:
         vc = guild.voice_client
         if not vc or not vc.is_paused():
             return "⚠️ 일시정지된 곡이 없습니다."
+        self._get_queue(guild.id).on_resume()
         vc.resume()
+        self.bot.dispatch("music_state_change", guild)
         return "▶️ 재생을 재개합니다."
 
     async def skip(self, guild: discord.Guild) -> str:
@@ -349,6 +358,7 @@ class Music(commands.Cog):
         self._cancel_idle_timer(guild.id)
         vc.stop()
         await self.bot.change_presence(activity=None)  # clear "Listening to" status
+        self.bot.dispatch("music_state_change", guild)
         self._start_idle_timer(guild)  # 정지 후 1분 타이머 시작
         return "⏹ 재생을 멈추고 큐를 비웠습니다."
 
@@ -410,6 +420,7 @@ class Music(commands.Cog):
                 f"(큐에 {len(queue.queue)}곡 있음)"
             )
 
+        self.bot.dispatch("music_state_change", guild)
         if len(removed) == 1:
             return f"🗑 **{removed[0].title}** 을(를) 큐에서 제거했습니다."
 
@@ -474,6 +485,7 @@ class Music(commands.Cog):
                     pos = len(queue.queue)
                     lines.append(f"✅ **{song.title}** `[{dur}]` → 큐 #{pos}")
 
+        self.bot.dispatch("music_state_change", guild)
         return "\n".join(lines)
 
     # ── playlist methods ──────────────────────────────────────────────────────
@@ -576,6 +588,20 @@ class Music(commands.Cog):
         """Return recent playback history for this guild."""
         return hist.get_history(guild.id, limit)
 
+    async def restart_song(self, guild: discord.Guild) -> str:
+        """Replay the current song from the beginning (⏮️ button)."""
+        vc = guild.voice_client
+        if not vc or (not vc.is_playing() and not vc.is_paused()):
+            return "⚠️ 현재 재생 중인 곡이 없습니다."
+        queue = self._get_queue(guild.id)
+        if not queue.current:
+            return "⚠️ 현재 재생 중인 곡이 없습니다."
+        # Put current song at front of queue so _play_next picks it up immediately
+        queue.queue.insert(0, queue.current)
+        title = queue.current.title
+        vc.stop()   # triggers _after → _play_next → plays queue[0] (the same song)
+        return f"↩️ **{title}** 처음부터 다시 재생합니다."
+
     async def skip_to(self, guild: discord.Guild, position: int) -> str:
         """Skip to queue position N (1-based). Removes items 1..N-1, then skips current."""
         vc = guild.voice_client
@@ -667,6 +693,7 @@ class Music(commands.Cog):
         song = await queue.move(from_pos - 1, to_pos - 1)
         if song is None:
             return "❌ 이동에 실패했습니다."
+        self.bot.dispatch("music_state_change", guild)
         return f"↕️ **{song.title}** 을(를) {from_pos}번 → {to_pos}번으로 이동했습니다."
 
     async def remove_by_title(self, guild: discord.Guild, title: str) -> str:

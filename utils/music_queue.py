@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -34,6 +35,33 @@ class MusicQueue:
         self.repeat_mode: RepeatMode = RepeatMode.OFF
         self.volume: float = 0.5  # 0.0 – 1.0
         self._lock = asyncio.Lock()
+        # Playback timer — used by the Now Playing panel for the progress bar.
+        self._play_started_at: Optional[datetime] = None
+        self._pause_elapsed: float = 0.0   # seconds elapsed before current pause
+
+    # ── playback timer ────────────────────────────────────────────────────────
+
+    def on_play(self) -> None:
+        """Call when a new song starts (not resume)."""
+        self._play_started_at = datetime.now(timezone.utc)
+        self._pause_elapsed = 0.0
+
+    def on_pause(self) -> None:
+        """Call when playback is paused."""
+        if self._play_started_at is not None:
+            self._pause_elapsed += (datetime.now(timezone.utc) - self._play_started_at).total_seconds()
+            self._play_started_at = None
+
+    def on_resume(self) -> None:
+        """Call when playback is resumed after a pause."""
+        self._play_started_at = datetime.now(timezone.utc)
+
+    def get_elapsed(self) -> float:
+        """Return estimated playback position in seconds."""
+        elapsed = self._pause_elapsed
+        if self._play_started_at is not None:
+            elapsed += (datetime.now(timezone.utc) - self._play_started_at).total_seconds()
+        return max(0.0, elapsed)
 
     # ── write ops ─────────────────────────────────────────────────────────────
 
