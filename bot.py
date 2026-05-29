@@ -30,6 +30,7 @@ COGS = [
     "cogs.cookie_watcher",
     "cogs.version_announce",
     "cogs.music_panel",
+    "cogs.dj_announce",
 ]
 
 

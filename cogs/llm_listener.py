@@ -292,6 +292,24 @@ def _wiki_fetch_sync(query: str) -> tuple[str, str] | None:
     return None
 
 
+def _fetch_lyrics_sync(title: str) -> str | None:
+    """Search lrclib.net for lyrics by song title. Returns plain lyrics text or None."""
+    import json
+    query = urllib.parse.urlencode({"q": title})
+    url = f"https://lrclib.net/api/search?{query}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "DiscordMusicBot/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            results = json.loads(r.read().decode("utf-8"))
+        for item in results:
+            lyrics = item.get("plainLyrics") or ""
+            if lyrics.strip():
+                return lyrics.strip()
+    except Exception as exc:
+        log.debug("lrclib fetch failed for %r: %s", title, exc)
+    return None
+
+
 def _load_channel_ids() -> set[int]:
     raw = os.getenv("MUSIC_CHANNEL_IDS", "")
     ids: set[int] = set()
@@ -512,6 +530,32 @@ class LLMListener(commands.Cog):
             "display": display,
         }
         return display
+
+    # ── lyrics helper ─────────────────────────────────────────────────────────
+
+    async def _do_show_lyrics(
+        self, message: discord.Message, music
+    ) -> str | discord.Embed:
+        song = music.get_current_song(message.guild)
+        if not song:
+            return "⚠️ 현재 재생 중인 곡이 없습니다."
+
+        loop = asyncio.get_running_loop()
+        lyrics = await loop.run_in_executor(None, _fetch_lyrics_sync, song.title)
+
+        if not lyrics:
+            return f"❌ **{song.title}** 의 가사를 찾을 수 없습니다."
+
+        LIMIT = 3800
+        truncated = len(lyrics) > LIMIT
+        body = lyrics[:LIMIT] + ("\n\n…(이하 생략)" if truncated else "")
+
+        embed = discord.Embed(
+            title=f"🎤 {song.title}",
+            description=body,
+            color=0x1DB954,
+        )
+        return embed
 
     # ── music info helper ─────────────────────────────────────────────────────
 
@@ -824,6 +868,15 @@ class LLMListener(commands.Cog):
 
             case "leave_voice_channel":
                 return await music.leave(guild)
+
+            case "show_lyrics":
+                return await self._do_show_lyrics(message, music)
+
+            case "show_player":
+                panel_cog = self.bot.cogs.get("MusicPanel")
+                if panel_cog:
+                    await panel_cog.refresh(guild, force_repost=True)
+                return None
 
             case _:
                 log.warning("Unknown tool name: %s", tool_name)

@@ -42,6 +42,43 @@ def _bar(elapsed: float, total: float, width: int = 14) -> str:
     return "▰" * filled + "▱" * (width - filled)
 
 
+# ── ephemeral queue-remove select ─────────────────────────────────────────────
+
+class _QueueRemoveSelect(discord.ui.Select):
+    def __init__(self, panel: "MusicPanel", guild: discord.Guild, queue_items: list) -> None:
+        self._panel = panel
+        self._guild = guild
+        options = [
+            discord.SelectOption(
+                label=f"{i}. {s.title[:80]}",
+                value=str(i),
+                description=_fmt(s.duration),
+            )
+            for i, s in enumerate(queue_items[:25], 1)
+        ]
+        super().__init__(
+            placeholder="삭제할 곡을 선택하세요 (복수 선택 가능)",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        music = self._panel.bot.cogs.get("Music")
+        if not music:
+            return
+        indices = sorted(int(v) for v in self.values)
+        result = await music.remove_from_queue(self._guild, indices)  # type: ignore[union-attr]
+        await interaction.followup.send(result, ephemeral=True)
+
+
+class _QueueRemoveView(discord.ui.View):
+    def __init__(self, panel: "MusicPanel", guild: discord.Guild, queue_items: list) -> None:
+        super().__init__(timeout=60)
+        self.add_item(_QueueRemoveSelect(panel, guild, queue_items))
+
+
 # ── persistent button view ────────────────────────────────────────────────────
 
 class MusicControlView(discord.ui.View):
@@ -103,6 +140,20 @@ class MusicControlView(discord.ui.View):
         if music and interaction.guild:
             await music.stop(interaction.guild)  # type: ignore[union-attr]
 
+    @discord.ui.button(emoji="🗑️", label="큐 삭제", style=discord.ButtonStyle.secondary, custom_id="mp_queue_remove", row=1)
+    async def btn_queue_remove(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        music = self._music()
+        guild = interaction.guild
+        if not music or not guild:
+            await interaction.response.send_message("❌ 오류가 발생했습니다.", ephemeral=True)
+            return
+        queue = music._get_queue(guild.id)  # type: ignore[union-attr]
+        if not queue.queue:
+            await interaction.response.send_message("📋 큐가 비어있습니다.", ephemeral=True)
+            return
+        view = _QueueRemoveView(self._panel, guild, list(queue.queue))
+        await interaction.response.send_message("삭제할 곡을 선택하세요:", view=view, ephemeral=True)
+
 
 # ── panel cog ─────────────────────────────────────────────────────────────────
 
@@ -118,6 +169,7 @@ class MusicPanel(commands.Cog):
         self._music_channel_ids: set[int] = _load_music_channel_ids()
         # guild_id → {"channel": TextChannel, "message": Message|None, "repost_count": int}
         self._panels: dict[int, dict] = {}
+        self._locks: dict[int, asyncio.Lock] = {}
         self._view = MusicControlView(self)
         bot.add_view(self._view)   # register for persistence across restarts
 
@@ -158,7 +210,7 @@ class MusicPanel(commands.Cog):
                 try:
                     await self._edit_panel(guild)
                 except Exception as exc:
-                    log.debug("panel: progress update failed guild=%s: %s", guild_id, exc)
+                    log.warning("panel: progress update failed guild=%s: %s", guild_id, exc)
 
     @_progress_loop.before_loop
     async def _before_progress(self) -> None:
@@ -218,25 +270,34 @@ class MusicPanel(commands.Cog):
         if not music or not panel:
             return
 
-        embed = self._build_embed(guild, music)
-        channel: discord.TextChannel = panel["channel"]
+        lock = self._locks.setdefault(guild.id, asyncio.Lock())
+        if lock.locked():
+            return  # skip if an edit is already in progress for this guild
 
-        if panel["message"] is None:
-            try:
-                msg = await channel.send(embed=embed, view=self._view)
-                panel["message"] = msg
-                panel["repost_count"] = 0
-            except discord.HTTPException as exc:
-                log.warning("panel: send failed guild=%s: %s", guild.id, exc)
-        else:
-            try:
-                await panel["message"].edit(embed=embed, view=self._view)
-                panel["repost_count"] = 0
-            except discord.NotFound:
-                panel["message"] = None
-                await self._edit_panel(guild)       # recreate
-            except discord.HTTPException as exc:
-                log.debug("panel: edit failed guild=%s: %s", guild.id, exc)
+        async with lock:
+            embed = self._build_embed(guild, music)
+            channel: discord.TextChannel = panel["channel"]
+
+            if panel["message"] is None:
+                try:
+                    msg = await channel.send(embed=embed, view=self._view)
+                    panel["message"] = msg
+                    panel["repost_count"] = 0
+                except discord.HTTPException as exc:
+                    log.warning("panel: send failed guild=%s: %s", guild.id, exc)
+            else:
+                try:
+                    await panel["message"].edit(embed=embed, view=self._view)
+                except discord.NotFound:
+                    panel["message"] = None
+                    panel["repost_count"] = 0
+                    try:
+                        msg = await channel.send(embed=embed, view=self._view)
+                        panel["message"] = msg
+                    except discord.HTTPException as exc:
+                        log.warning("panel: recreate failed guild=%s: %s", guild.id, exc)
+                except discord.HTTPException as exc:
+                    log.warning("panel: edit failed guild=%s: %s", guild.id, exc)
 
     async def _delete_panel(self, guild_id: int) -> None:
         panel = self._panels.pop(guild_id, None)

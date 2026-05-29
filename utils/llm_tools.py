@@ -437,4 +437,22 @@ MUSIC_TOOLS: list[dict] = [
         "description": "Make the bot leave the voice channel. Use for '나가', 'leave', 'disconnect', 'bye'.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "show_lyrics",
+        "description": (
+            "Show the lyrics of the currently playing song. "
+            "Use when the user asks for lyrics. "
+            "E.g. '가사 알려줘', '가사 보여줘', '가사 뭐야', 'show lyrics', 'lyrics please'."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "show_player",
+        "description": (
+            "Re-post the Now Playing panel (music player UI) so it appears at the bottom of the channel. "
+            "Use when the user asks to see the player/panel. "
+            "E.g. '플레이어 보여줘', '패널 다시 보여줘', 'show player', 'show panel', '뮤직 패널'."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
