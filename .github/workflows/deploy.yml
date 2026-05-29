@@ -67,11 +67,12 @@ jobs:
       # ── 4. .env 동기화 ───────────────────────────────────────────────────────
       - name: Sync .env to EC2 via SSM
         run: |
-          ENV_B64=$(printf 'DISCORD_TOKEN=%s\nANTHROPIC_API_KEY=%s\nCLAUDE_MODEL=%s\nMUSIC_CHANNEL_IDS=%s\n' \
+          ENV_B64=$(printf 'DISCORD_TOKEN=%s\nANTHROPIC_API_KEY=%s\nCLAUDE_MODEL=%s\nMUSIC_CHANNEL_IDS=%s\nLASTFM_API_KEY=%s\n' \
             '${{ secrets.DISCORD_TOKEN }}' \
             '${{ secrets.ANTHROPIC_API_KEY }}' \
             '${{ secrets.CLAUDE_MODEL || 'claude-sonnet-4-6' }}' \
             '${{ secrets.MUSIC_CHANNEL_IDS }}' \
+            '${{ secrets.LASTFM_API_KEY }}' \
             | base64 -w0)
 
           CMD_ID=$(aws ssm send-command \
