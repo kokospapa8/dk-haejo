@@ -106,9 +106,16 @@ class MusicControlView(discord.ui.View):
 
 # ── panel cog ─────────────────────────────────────────────────────────────────
 
+def _load_music_channel_ids() -> set[int]:
+    import os
+    raw = os.getenv("MUSIC_CHANNEL_IDS", "")
+    return {int(p) for p in raw.split(",") if p.strip().isdigit()}
+
+
 class MusicPanel(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._music_channel_ids: set[int] = _load_music_channel_ids()
         # guild_id → {"channel": TextChannel, "message": Message|None, "repost_count": int}
         self._panels: dict[int, dict] = {}
         self._view = MusicControlView(self)
@@ -159,13 +166,28 @@ class MusicPanel(commands.Cog):
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    def _resolve_panel_channel(self, guild: discord.Guild, music) -> Optional[discord.TextChannel]:
+        """Return a panel channel that is within MUSIC_CHANNEL_IDS.
+
+        Prefers the channel where the last command came from (if it's a music
+        channel); falls back to the first reachable music channel.
+        """
+        candidate: Optional[discord.TextChannel] = music._text_channels.get(guild.id)  # type: ignore[union-attr]
+        if candidate and candidate.id in self._music_channel_ids:
+            return candidate
+        for cid in self._music_channel_ids:
+            ch = self.bot.get_channel(cid)
+            if isinstance(ch, discord.TextChannel) and ch.guild.id == guild.id:
+                return ch
+        return None
+
     async def refresh(self, guild: discord.Guild, *, force_repost: bool = False) -> None:
         """Create or update the panel for this guild."""
         music = self.bot.cogs.get("Music")
         if not music:
             return
 
-        channel: Optional[discord.TextChannel] = music._text_channels.get(guild.id)  # type: ignore[union-attr]
+        channel = self._resolve_panel_channel(guild, music)
         if not channel:
             return
 
