@@ -10,7 +10,7 @@ on:
   workflow_dispatch:    # GitHub Actions UI에서 수동 실행 가능
 
 permissions:
-  contents: read
+  contents: write   # version bump 커밋 push 필요
 
 jobs:
   deploy:
@@ -18,11 +18,45 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ── 1. 코드 체크아웃 (scripts/deploy.sh 가져오기 위해) ───────────────────
+      # ── 1. 코드 체크아웃 ─────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # changelog 생성을 위해 전체 히스토리 필요
 
-      # ── 2. AWS 인증 ──────────────────────────────────────────────────────────
+      # ── 2. 버전 자동 업 + ANNOUNCE.md 생성 ──────────────────────────────────
+      - name: Bump version and generate changelog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          bash scripts/bump_version.sh
+          NEW_VERSION=$(cat VERSION)
+
+          # 이전 버전 bump 커밋 이후의 변경 내역 수집
+          LAST_BUMP=$(git log --format="%H" --grep="\[skip ci\]" -1 2>/dev/null || echo "")
+          if [ -n "$LAST_BUMP" ]; then
+            RANGE="${LAST_BUMP}..HEAD"
+          else
+            RANGE="HEAD~10..HEAD"
+          fi
+
+          CHANGELOG=$(git log --pretty="- %s" "$RANGE" \
+            | grep -v "\[skip ci\]" \
+            | grep -v "^- Merge" \
+            | head -15)
+
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="- 새 버전 배포"
+          fi
+
+          printf "### 변경사항\n\n%s\n" "$CHANGELOG" > ANNOUNCE.md
+
+          git add VERSION ANNOUNCE.md
+          git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
+          git push
+
+      # ── 3. AWS 인증 ──────────────────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -30,7 +64,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # ── 3. .env 동기화 ───────────────────────────────────────────────────────
+      # ── 4. .env 동기화 ───────────────────────────────────────────────────────
       - name: Sync .env to EC2 via SSM
         run: |
           ENV_B64=$(printf 'DISCORD_TOKEN=%s\nANTHROPIC_API_KEY=%s\nCLAUDE_MODEL=%s\nMUSIC_CHANNEL_IDS=%s\n' \
@@ -57,8 +91,7 @@ jobs:
             sleep 5
           done
 
-      # ── 4. 배포 스크립트를 base64로 인코딩 후 SSM 실행 ──────────────────────
-      # scripts/deploy.sh 는 별도 파일 → YAML 이스케이프 문제 없음
+      # ── 5. 배포 스크립트를 base64로 인코딩 후 SSM 실행 ──────────────────────
       - name: Deploy via SSM
         id: deploy
         run: |
@@ -75,7 +108,7 @@ jobs:
           echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
           echo "SSM Command ID: $COMMAND_ID"
 
-      # ── 5. 완료 대기 및 로그 출력 ────────────────────────────────────────────
+      # ── 6. 완료 대기 및 로그 출력 ────────────────────────────────────────────
       - name: Wait for deployment
         run: |
           COMMAND_ID="${{ steps.deploy.outputs.command_id }}"
