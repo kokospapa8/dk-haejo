@@ -154,6 +154,13 @@ class MusicControlView(discord.ui.View):
         view = _QueueRemoveView(self._panel, guild, list(queue.queue))
         await interaction.response.send_message("삭제할 곡을 선택하세요:", view=view, ephemeral=True)
 
+    @discord.ui.button(emoji="🤖", label="자동추천", style=discord.ButtonStyle.secondary, custom_id="mp_auto_rec", row=1)
+    async def btn_auto_rec(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        music = self._music()
+        if music and interaction.guild:
+            await music.toggle_auto_recommend(interaction.guild)  # type: ignore[union-attr]
+
 
 # ── panel cog ─────────────────────────────────────────────────────────────────
 
@@ -264,12 +271,22 @@ class MusicPanel(commands.Cog):
 
     # ── internal ──────────────────────────────────────────────────────────────
 
+    def _sync_auto_rec_button(self, guild: discord.Guild, music) -> None:
+        """Update 🤖 button style/label to reflect current auto_recommend state."""
+        queue = music._get_queue(guild.id)  # type: ignore[union-attr]
+        for item in self._view.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "mp_auto_rec":
+                item.style = discord.ButtonStyle.success if queue.auto_recommend else discord.ButtonStyle.secondary
+                item.label = "자동추천 ON" if queue.auto_recommend else "자동추천"
+                break
+
     async def _edit_panel(self, guild: discord.Guild) -> None:
         music = self.bot.cogs.get("Music")
         panel = self._panels.get(guild.id)
         if not music or not panel:
             return
 
+        self._sync_auto_rec_button(guild, music)
         lock = self._locks.setdefault(guild.id, asyncio.Lock())
         if lock.locked():
             return  # skip if an edit is already in progress for this guild
@@ -349,9 +366,11 @@ class MusicPanel(commands.Cog):
             RepeatMode.SINGLE: "🔂 한 곡 반복",
             RepeatMode.QUEUE:  "🔁 전체 반복",
         }
-        embed.set_footer(
-            text=f"{repeat_labels[queue.repeat_mode]} │ 🔊 {int(queue.volume * 100)}%"
-        )
+        auto_rec_label = "🤖 자동추천 ON" if queue.auto_recommend else ""
+        footer_parts = [repeat_labels[queue.repeat_mode], f"🔊 {int(queue.volume * 100)}%"]
+        if auto_rec_label:
+            footer_parts.append(auto_rec_label)
+        embed.set_footer(text=" │ ".join(footer_parts))
         return embed
 
 

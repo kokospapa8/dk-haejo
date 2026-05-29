@@ -35,6 +35,7 @@ class MusicQueue:
         self.current: Optional[Song] = None
         self.repeat_mode: RepeatMode = RepeatMode.OFF
         self.volume: float = 0.5  # 0.0 – 1.0
+        self.auto_recommend: bool = False
         self._lock = asyncio.Lock()
         # Playback timer — used by the Now Playing panel for the progress bar.
         self._play_started_at: Optional[datetime] = None

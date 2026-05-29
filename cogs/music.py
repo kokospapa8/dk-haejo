@@ -123,8 +123,10 @@ class Music(commands.Cog):
         next_song = await queue.next()
         if next_song:
             await self._play_audio(guild, next_song)
+        elif queue.auto_recommend and queue.repeat_mode == RepeatMode.OFF:
+            # 자동추천 모드 — TrackCollector가 채워서 재개
+            self.bot.dispatch("queue_exhausted", guild)
         else:
-            # 큐 소진 → 유휴 타임아웃 시작
             self._start_idle_timer(guild)
             self.bot.dispatch("music_state_change", guild)
 
@@ -365,6 +367,16 @@ class Music(commands.Cog):
         self.bot.dispatch("music_state_change", guild)
         self._start_idle_timer(guild)  # 정지 후 1분 타이머 시작
         return "⏹ 재생을 멈추고 큐를 비웠습니다."
+
+    def toggle_auto_recommend(self, guild: discord.Guild) -> str:
+        queue = self._get_queue(guild.id)
+        queue.auto_recommend = not queue.auto_recommend
+        self.bot.dispatch("music_state_change", guild)
+        return (
+            "🤖 자동추천 모드 **ON** — 대기열이 비면 Last.fm 추천곡을 자동으로 추가합니다."
+            if queue.auto_recommend else
+            "🤖 자동추천 모드 **OFF**"
+        )
 
     def view_queue(self, guild: discord.Guild) -> discord.Embed:
         queue = self._get_queue(guild.id)

@@ -12,7 +12,10 @@ import logging
 import discord
 from discord.ext import commands
 
+from utils import history as hist
 from utils import lastfm, user_tracks
+from utils.music_queue import Song
+from utils.youtube import search_youtube
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +72,83 @@ class TrackCollector(commands.Cog):
             "track_collector: recorded %r by user %s (lastfm: %r / %r, tags: %s)",
             song.title, song.requester_id, lf_title, lf_artist, tags,
         )
+
+    # ── auto-recommend on queue exhausted ────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_queue_exhausted(self, guild: discord.Guild) -> None:
+        """Fill queue with 3 recommendations when auto_recommend mode is ON."""
+        music = self.bot.cogs.get("Music")
+        if not music:
+            return
+        queue = music._get_queue(guild.id)  # type: ignore[union-attr]
+
+        added = await self._fill_recommendations(guild, queue)
+
+        if added > 0:
+            await music._play_next(guild)  # type: ignore[union-attr]
+        else:
+            music._start_idle_timer(guild)  # type: ignore[union-attr]
+            self.bot.dispatch("music_state_change", guild)
+
+    async def _fill_recommendations(self, guild: discord.Guild, queue) -> int:  # type: ignore[type-arg]
+        """Fetch 3 Last.fm-based recommendations and add them to the queue. Returns count added."""
+        loop = asyncio.get_running_loop()
+        history = await loop.run_in_executor(None, hist.get_history, guild.id, 10)
+        if not history:
+            return 0
+
+        # Collect similar tracks from up to 5 recent seeds
+        similar: list[dict] = []
+        for entry in history[:5]:
+            yt_song, yt_artist = lastfm.parse_yt_title(entry["title"])
+            if not yt_artist:
+                continue
+            result = await loop.run_in_executor(
+                None, lastfm.get_similar_tracks, yt_artist, yt_song, 15
+            )
+            similar.extend(result)
+            if len(similar) >= 20:
+                break
+
+        if not similar:
+            return 0
+
+        # Deduplicate and exclude recently played
+        played_urls = {e["webpage_url"] for e in history}
+        seen: set[str] = set()
+        candidates: list[dict] = []
+        for t in similar:
+            key = f"{t['artist']}|{t['title']}".lower()
+            if key not in seen:
+                seen.add(key)
+                candidates.append(t)
+
+        added = 0
+        for rec in candidates:
+            if added >= 3:
+                break
+            try:
+                yt = await search_youtube(f"{rec['artist']} {rec['title']}")
+                if not yt or yt.get("webpage_url") in played_urls:
+                    continue
+                song = Song(
+                    title=yt["title"],
+                    webpage_url=yt["webpage_url"],
+                    duration=yt.get("duration", 0),
+                    thumbnail=yt.get("thumbnail"),
+                    requested_by="🤖 자동추천",
+                    video_id=yt.get("video_id", ""),
+                    requester_id=0,
+                )
+                await queue.add(song)
+                played_urls.add(yt["webpage_url"])
+                added += 1
+                log.info("auto_recommend: added %r to guild %s", yt["title"], guild.id)
+            except Exception as exc:
+                log.debug("auto_recommend: skipped %r — %s", rec, exc)
+
+        return added
 
     @staticmethod
     def _fetch_lastfm(artist: str, title: str) -> tuple[str, str, list[str]]:

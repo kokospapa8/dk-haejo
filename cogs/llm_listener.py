@@ -1034,6 +1034,9 @@ class LLMListener(commands.Cog):
             case "leave_voice_channel":
                 return await music.leave(guild)
 
+            case "toggle_auto_recommend":
+                return music.toggle_auto_recommend(guild)
+
             case "recommend_songs":
                 return await self._do_recommend(
                     message,

@@ -438,6 +438,15 @@ MUSIC_TOOLS: list[dict] = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "toggle_auto_recommend",
+        "description": (
+            "Toggle the auto-recommend mode on or off. "
+            "When ON, the bot automatically adds 3 Last.fm-recommended songs whenever the queue runs out. "
+            "Use for '자동추천 켜줘', '자동추천 꺼줘', '자동추천 모드', 'auto recommend on/off'."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "recommend_songs",
         "description": (
             "Recommend songs based on the user's play history using Last.fm. "
