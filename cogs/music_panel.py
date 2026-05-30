@@ -330,8 +330,24 @@ class MusicPanel(commands.Cog):
         embed = discord.Embed(color=0x1DB954)
 
         if not queue.current:
-            embed.title = "🎵 재생 없음"
-            embed.description = "재생 중인 곡이 없습니다.\n음악을 요청해 주세요!"
+            if queue.queue:
+                # Restored queue waiting to play
+                embed.title = "⏸️ 대기 중 (복구된 대기열)"
+                lines = [
+                    f"`{i}.` **{s.title}** `[{_fmt(s.duration)}]`"
+                    for i, s in enumerate(queue.queue[:5], 1)
+                ]
+                if len(queue.queue) > 5:
+                    lines.append(f"… 외 {len(queue.queue) - 5}곡")
+                embed.description = "\n".join(lines)
+                embed.add_field(
+                    name="💡 재생하려면",
+                    value="**'틀어줘'** 또는 **'play'** 라고 해주세요",
+                    inline=False,
+                )
+            else:
+                embed.title = "🎵 재생 없음"
+                embed.description = "재생 중인 곡이 없습니다.\n음악을 요청해 주세요!"
             return embed
 
         song = queue.current
