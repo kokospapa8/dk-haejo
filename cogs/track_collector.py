@@ -92,7 +92,7 @@ class TrackCollector(commands.Cog):
             self.bot.dispatch("music_state_change", guild)
 
     async def _fill_recommendations(self, guild: discord.Guild, queue) -> int:  # type: ignore[type-arg]
-        """Fetch 3 Last.fm-based recommendations and add them to the queue. Returns count added."""
+        """Fetch 1 Last.fm-based recommendation and add it to the queue. Returns count added."""
         loop = asyncio.get_running_loop()
         history = await loop.run_in_executor(None, hist.get_history, guild.id, 10)
         if not history:
@@ -126,7 +126,7 @@ class TrackCollector(commands.Cog):
 
         added = 0
         for rec in candidates:
-            if added >= 3:
+            if added >= 1:
                 break
             try:
                 yt = await search_youtube(f"{rec['artist']} {rec['title']}")
