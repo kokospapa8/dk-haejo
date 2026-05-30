@@ -132,6 +132,16 @@ async def search_youtube_multi(query: str, count: int = 10) -> list[dict[str, An
     return await loop.run_in_executor(_executor, _search_multi_sync, query, min(count, 10))
 
 
+async def fetch_from_url(url: str, max_entries: int = 50) -> list[dict[str, Any]]:
+    """Fetch metadata from a YouTube video or playlist URL.
+
+    Returns a list of {title, video_id, webpage_url, duration, thumbnail}.
+    Single video → 1-item list.  Playlist → up to max_entries items.
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _fetch_url_sync, url, max_entries)
+
+
 async def get_stream_url(webpage_url: str, max_retries: int = 2) -> str:
     """Extract a fresh audio stream URL for *webpage_url*.
 
@@ -237,6 +247,51 @@ def _search_multi_sync(query: str, count: int) -> list[dict[str, Any]]:
         "yt-dlp [search_multi] OK  query=%r  results=%d  elapsed=%.2fs",
         query, len(entries), elapsed,
     )
+
+    return [
+        {
+            "title": e.get("title", "Unknown"),
+            "video_id": e.get("id", ""),
+            "webpage_url": (
+                e.get("webpage_url")
+                or e.get("url")
+                or f"https://www.youtube.com/watch?v={e.get('id', '')}"
+            ),
+            "duration": e.get("duration") or 0,
+            "thumbnail": e.get("thumbnail"),
+        }
+        for e in entries
+    ]
+
+
+def _fetch_url_sync(url: str, max_entries: int) -> list[dict[str, Any]]:
+    log.info("yt-dlp [fetch_url] START  url=%s  max=%d", url, max_entries)
+    t0 = time.monotonic()
+
+    opts = {
+        **copy.deepcopy(_SEARCH_OPTS),
+        "noplaylist": False,   # allow playlist expansion
+        "playlistend": max_entries,
+    }
+    _apply_cookies(opts)
+    if _VERBOSE:
+        opts["logger"] = _YtdlpLogger()
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            result = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        log.error("yt-dlp [fetch_url] FAILED  url=%s  error=%s", url, exc)
+        raise
+
+    # Playlist → entries list; single video → wrap in list
+    if result and "entries" in result:
+        entries = [e for e in (result["entries"] or []) if e][:max_entries]
+    else:
+        entries = [result] if result else []
+
+    elapsed = time.monotonic() - t0
+    log.info("yt-dlp [fetch_url] OK  url=%s  count=%d  elapsed=%.2fs", url, len(entries), elapsed)
 
     return [
         {

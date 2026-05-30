@@ -33,7 +33,7 @@ from discord.ext import commands
 from cogs.music import Music
 from utils import lastfm, user_tracks
 from utils.llm_tools import MUSIC_TOOLS
-from utils.youtube import search_youtube, search_youtube_multi
+from utils.youtube import fetch_from_url, search_youtube, search_youtube_multi
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +73,11 @@ When you call a tool:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [TOOL SELECTION GUIDE]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+User pastes a YouTube URL (video or playlist):
+Examples: youtube.com/watch?v=..., youtu.be/..., youtube.com/playlist?list=...
+→ play_url(url)
+- Use this whenever the message contains a YouTube URL, regardless of other text.
 
 Single song request:
 → play_song(title, artist)
@@ -586,6 +591,31 @@ class LLMListener(commands.Cog):
         ]
         return valid[-1] if valid else None  # play_songs result is last
 
+    # ── URL play helper ───────────────────────────────────────────────────────
+
+    async def _do_play_url(
+        self, message: discord.Message, music, url: str
+    ) -> str:
+        try:
+            entries = await fetch_from_url(url, max_entries=50)
+        except Exception as exc:
+            log.exception("fetch_from_url failed for %s", url)
+            return f"❌ URL 로드 실패: {str(exc)[:200]}"
+
+        if not entries:
+            return "❌ URL에서 곡을 찾을 수 없습니다."
+
+        if len(entries) == 1:
+            return await music.play_song(
+                message.guild, message.author, entries[0]["webpage_url"], message.channel
+            )
+
+        # Playlist — batch add
+        urls = [e["webpage_url"] for e in entries]
+        return await music.play_songs(
+            message.guild, message.author, urls, message.channel
+        )
+
     # ── search helper ─────────────────────────────────────────────────────────
 
     async def _do_search(
@@ -936,6 +966,9 @@ class LLMListener(commands.Cog):
             return "❌ Music 모듈이 로드되지 않았습니다."
 
         match tool_name:
+            case "play_url":
+                return await self._do_play_url(message, music, inputs["url"])
+
             case "play_song":
                 query = _build_play_query(inputs)
                 return await music.play_song(

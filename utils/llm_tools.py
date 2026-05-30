@@ -31,6 +31,25 @@ MUSIC_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "play_url",
+        "description": (
+            "Add a YouTube video or playlist to the queue directly from a URL. "
+            "Use when the user pastes a YouTube link (youtube.com/watch?v=..., youtu.be/..., "
+            "youtube.com/playlist?list=..., youtube.com/watch?v=...&list=...). "
+            "Do NOT use play_song for URLs — use this tool instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full YouTube video or playlist URL.",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
         "name": "pause_playback",
         "description": "Pause the currently playing song. Use for '멈춰', '일시정지', 'pause'.",
         "input_schema": {"type": "object", "properties": {}},
