@@ -455,8 +455,110 @@ def _parse_yt_title(title: str) -> tuple[str, str]:
     return song or title, artist
 
 
+def _fetch_genius_sync(query: str) -> str | None:
+    """Search Genius API then scrape the lyrics page.
+
+    Requires GENIUS_ACCESS_TOKEN env var.  Returns plain-text lyrics or None.
+    """
+    import json as _j
+
+    token = os.getenv("GENIUS_ACCESS_TOKEN", "")
+    if not token:
+        return None
+
+    # ── Step 1: search API for song URL ──────────────────────────────────────
+    search_url = (
+        "https://api.genius.com/search?"
+        + urllib.parse.urlencode({"q": query})
+    )
+    try:
+        req = urllib.request.Request(
+            search_url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "DiscordMusicBot/1.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = _j.loads(r.read().decode("utf-8"))
+        hits = data.get("response", {}).get("hits", [])
+        if not hits:
+            log.debug("Genius: no hits for %r", query)
+            return None
+        song_url = hits[0]["result"]["url"]
+        log.debug("Genius: found %r → %s", query, song_url)
+    except Exception as exc:
+        log.debug("Genius search failed for %r: %s", query, exc)
+        return None
+
+    # ── Step 2: scrape lyrics from the song page ──────────────────────────────
+    try:
+        page_req = urllib.request.Request(
+            song_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(page_req, timeout=12) as r:
+            html = r.read().decode("utf-8", errors="ignore")
+    except Exception as exc:
+        log.debug("Genius page fetch failed %s: %s", song_url, exc)
+        return None
+
+    # Replace <br> before stripping tags so line breaks are preserved
+    html = re.sub(r"<br\s*/?>", "\n", html)
+
+    # Lyrics live in one or more <div data-lyrics-container="true"> blocks.
+    # Match from the opening tag's close (>) to the next lyrics container
+    # or to the lyrics footer landmark — whichever comes first.
+    sections = re.findall(
+        r'data-lyrics-container="true"[^>]*>([\s\S]+?)'
+        r'(?=data-lyrics-container="true"|<div class="LyricsFooter|<div data-id=")',
+        html,
+    )
+    if not sections:
+        log.debug("Genius: no lyrics containers found on %s", song_url)
+        return None
+
+    parts: list[str] = []
+    for chunk in sections:
+        # Strip all remaining HTML tags
+        chunk = re.sub(r"<[^>]+>", "", chunk)
+        # Decode common HTML entities
+        for ent, ch in (
+            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&#x27;", "'"), ("&#39;", "'"), ("&quot;", '"'),
+            ("&nbsp;", " "),
+        ):
+            chunk = chunk.replace(ent, ch)
+        # Remove Genius page chrome: "N Contributors<title> Lyrics" header
+        chunk = re.sub(r"^\d+\s+Contributors.*?Lyrics", "", chunk, flags=re.DOTALL).strip()
+        lines = [l.strip() for l in chunk.splitlines() if l.strip()]
+        # Strip inline Genius noise appended to last lyric line
+        if lines:
+            lines[-1] = re.sub(r"\s*You might also like.*$", "", lines[-1]).strip()
+        # Drop trailing noise lines ("You might also like", embed codes, etc.)
+        while lines and re.match(r"^(You might also like|Embed|[0-9]+$)", lines[-1]):
+            lines.pop()
+        lines = [l for l in lines if l]  # drop any newly empty lines
+        if lines:
+            parts.append("\n".join(lines))
+
+    lyrics = "\n\n".join(parts).strip()
+    if len(lyrics) < 30:
+        return None
+
+    log.debug("Genius: found lyrics (%d chars) for %r", len(lyrics), query)
+    return lyrics
+
+
 def _fetch_lyrics_sync(title: str, artist: str = "", track: str = "") -> str | None:
-    """Search lrclib.net for lyrics.
+    """Search for lyrics: lrclib (synced/plain) → Genius fallback.
 
     Uses yt-dlp music metadata (artist, track) when available — much more
     reliable than parsing the YouTube title.  Falls back to title parsing
@@ -464,7 +566,7 @@ def _fetch_lyrics_sync(title: str, artist: str = "", track: str = "") -> str | N
     """
     import json
 
-    def _search(params: dict) -> str | None:
+    def _lrclib(params: dict) -> str | None:
         url = f"https://lrclib.net/api/search?{urllib.parse.urlencode(params)}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "DiscordMusicBot/1.0"})
@@ -478,33 +580,44 @@ def _fetch_lyrics_sync(title: str, artist: str = "", track: str = "") -> str | N
             log.debug("lrclib fetch failed params=%s: %s", params, exc)
         return None
 
-    # ── Tier 1: use yt-dlp metadata directly (most accurate) ─────────────────
+    # ── Tier 1: lrclib with yt-dlp metadata (most accurate) ──────────────────
     if artist and track:
-        result = _search({"track_name": track, "artist_name": artist})
+        result = _lrclib({"track_name": track, "artist_name": artist})
         if result:
             log.debug("lrclib hit via yt-dlp metadata: artist=%r track=%r", artist, track)
             return result
 
     if track:
-        result = _search({"q": track})
+        result = _lrclib({"q": track})
         if result:
             return result
 
-    # ── Tier 2: fall back to parsing the YouTube title ────────────────────────
+    # ── Tier 2: lrclib with parsed YouTube title ──────────────────────────────
     parsed_track, parsed_artist = _parse_yt_title(title)
 
     if parsed_artist:
-        result = _search({"track_name": parsed_track, "artist_name": parsed_artist})
+        result = _lrclib({"track_name": parsed_track, "artist_name": parsed_artist})
         if result:
             return result
 
-    result = _search({"q": parsed_track})
+    result = _lrclib({"q": parsed_track})
     if result:
         return result
 
-    # ── Tier 3: raw title as last resort ──────────────────────────────────────
     if parsed_track != title:
-        result = _search({"q": title})
+        result = _lrclib({"q": title})
+        if result:
+            return result
+
+    # ── Tier 3: Genius (broad coverage, especially K-pop) ────────────────────
+    genius_query = f"{artist} {track}".strip() if (artist or track) else parsed_track
+    result = _fetch_genius_sync(genius_query)
+    if result:
+        return result
+
+    # last resort: full original title
+    if genius_query != title:
+        result = _fetch_genius_sync(title)
         if result:
             return result
 
