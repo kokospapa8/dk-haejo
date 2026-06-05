@@ -101,24 +101,43 @@ class QueueSaver(commands.Cog):
 
         # ── auto-reconnect to voice channel and resume playback ───────────────
         vc_id = state.get("voice_channel_id")
+        log.info(
+            "queue_saver [restore] guild=%s  songs=%d  vc_id=%s  repeat=%s  volume=%.1f",
+            guild.id, len(songs), vc_id, state.get("repeat_mode"), queue.volume,
+        )
+        for i, s in enumerate(songs):
+            log.info("queue_saver [restore]   [%d] %s", i + 1, s.title)
+
         auto_playing = False
         if vc_id:
             vc_channel = guild.get_channel(vc_id)
+            log.info(
+                "queue_saver [restore] vc lookup: id=%s  found=%s  type=%s",
+                vc_id, vc_channel, type(vc_channel).__name__ if vc_channel else "None",
+            )
             if isinstance(vc_channel, discord.VoiceChannel):
                 try:
+                    log.info("queue_saver [restore] connecting to #%s …", vc_channel.name)
                     await vc_channel.connect()
+                    log.info("queue_saver [restore] connected  guild_vc=%s", guild.voice_client)
                     # Register the text channel so _play_audio can send messages
                     if ch:
                         music._text_channels[guild.id] = ch  # type: ignore[union-attr]
                     await asyncio.sleep(1)   # let the voice connection stabilise
+                    log.info("queue_saver [restore] calling _play_next …")
                     await music._play_next(guild)  # type: ignore[union-attr]
                     auto_playing = True
                     log.info(
-                        "queue_saver: auto-resumed playback in #%s (guild %s)",
+                        "queue_saver [restore] ✅ auto-resumed in #%s (guild %s)",
                         vc_channel.name, guild.id,
                     )
                 except Exception as exc:
-                    log.warning("queue_saver: auto-reconnect failed for guild %s: %s", guild.id, exc)
+                    log.warning(
+                        "queue_saver [restore] ❌ auto-reconnect FAILED guild=%s: %s",
+                        guild.id, exc, exc_info=True,
+                    )
+        else:
+            log.info("queue_saver [restore] no voice_channel_id in saved state — manual play required")
 
         if ch:
             if auto_playing:

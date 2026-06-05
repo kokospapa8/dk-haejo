@@ -341,14 +341,33 @@ class Music(commands.Cog):
         self.bot.dispatch("music_state_change", guild)
         return "⏸ 일시정지했습니다."
 
-    async def resume(self, guild: discord.Guild) -> str:
+    async def resume(self, guild: discord.Guild, member: Optional[discord.Member] = None) -> str:
         vc = guild.voice_client
-        if not vc or not vc.is_paused():
-            return "⚠️ 일시정지된 곡이 없습니다."
-        self._get_queue(guild.id).on_resume()
-        vc.resume()
-        self.bot.dispatch("music_state_change", guild)
-        return "▶️ 재생을 재개합니다."
+        queue = self._get_queue(guild.id)
+
+        # Normal case: paused → resume
+        if vc and vc.is_paused():
+            queue.on_resume()
+            vc.resume()
+            self.bot.dispatch("music_state_change", guild)
+            return "▶️ 재생을 재개합니다."
+
+        # Restored queue but bot not in voice: join and start playing
+        if queue.queue or queue.current:
+            if not vc:
+                if member:
+                    ok, msg = await self.join_channel(member)
+                    if not ok:
+                        return msg
+                else:
+                    return "❌ 음성 채널에 입장한 뒤 다시 시도해 주세요."
+            vc = guild.voice_client
+            if vc and not vc.is_playing():
+                await self._play_next(guild)
+                title = queue.current.title if queue.current else "대기열 첫 번째 곡"
+                return f"▶️ **{title}** 재생을 시작합니다."
+
+        return "⚠️ 재생할 곡이 없습니다."
 
     async def skip(self, guild: discord.Guild) -> str:
         vc = guild.voice_client
@@ -624,12 +643,36 @@ class Music(commands.Cog):
         vc.stop()   # triggers _after → _play_next → plays queue[0] (the same song)
         return f"↩️ **{title}** 처음부터 다시 재생합니다."
 
-    async def skip_to(self, guild: discord.Guild, position: int) -> str:
-        """Skip to queue position N (1-based). Removes items 1..N-1, then skips current."""
-        vc = guild.voice_client
-        if not vc or (not vc.is_playing() and not vc.is_paused()):
-            return "⚠️ 현재 재생 중인 곡이 없습니다."
+    async def skip_to(
+        self,
+        guild: discord.Guild,
+        position: int,
+        member: Optional[discord.Member] = None,
+    ) -> str:
+        """Skip to queue position N (1-based). Removes items 1..N-1, then starts playback."""
         queue = self._get_queue(guild.id)
+        vc    = guild.voice_client
+
+        # Bot not in voice but queue exists: join and play from position N
+        if not vc or (not vc.is_playing() and not vc.is_paused()):
+            if not queue.queue:
+                return "⚠️ 대기열이 비어 있습니다."
+            if position < 1 or position > len(queue.queue):
+                return f"❌ 올바른 번호를 입력해 주세요. (대기열에 {len(queue.queue)}곡 있음)"
+            if position > 1:
+                await queue.remove_multiple(list(range(position - 1)))
+            if not vc:
+                if member:
+                    ok, msg = await self.join_channel(member)
+                    if not ok:
+                        return msg
+                else:
+                    return "❌ 음성 채널에 입장한 뒤 다시 시도해 주세요."
+            next_title = queue.queue[0].title if queue.queue else "?"
+            await self._play_next(guild)
+            return f"▶️ **{next_title}** 재생을 시작합니다."
+
+        # Normal case: currently playing → skip to N
         if not queue.queue:
             return "⚠️ 대기열이 비어 있습니다."
         if position < 1 or position > len(queue.queue):

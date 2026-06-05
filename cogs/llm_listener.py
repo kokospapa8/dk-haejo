@@ -1317,7 +1317,7 @@ class LLMListener(commands.Cog):
                 return await music.pause(guild)
 
             case "resume_playback":
-                return await music.resume(guild)
+                return await music.resume(guild, member)
 
             case "skip_song":
                 return await music.skip(guild)
@@ -1332,7 +1332,7 @@ class LLMListener(commands.Cog):
                 return await music.remove_from_queue(guild, inputs["indices"])
 
             case "skip_to_position":
-                return await music.skip_to(guild, inputs["position"])
+                return await music.skip_to(guild, inputs["position"], member)
 
             case "move_in_queue":
                 return await music.move_in_queue(

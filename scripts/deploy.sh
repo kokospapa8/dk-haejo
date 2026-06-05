@@ -65,8 +65,9 @@ touch "$REPO/cookies.txt"
 # data 디렉토리 사전 생성 (bind mount 전 존재해야 queue/history 저장 가능)
 mkdir -p "$REPO/data"
 
+docker compose down --remove-orphans || true
 docker compose build --no-cache
-docker compose up -d --remove-orphans
+docker compose up -d
 docker image prune -f
 
 echo "✅ 배포 완료: $(date)"
