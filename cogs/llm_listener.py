@@ -719,10 +719,6 @@ class LLMListener(commands.Cog):
             await message.reply("무엇을 도와드릴까요? 🎵")
             return
 
-        # "!" 접두사 → 사람끼리 대화 표시, 봇 무시
-        if content.startswith("!"):
-            return
-
         async with message.channel.typing():
             reply = await self._handle_llm(message, content)
 
