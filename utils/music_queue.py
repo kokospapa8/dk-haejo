@@ -25,6 +25,10 @@ class Song:
     requested_by: str  # Discord display name
     video_id: str = ""
     requester_id: int = 0  # Discord user ID (0 = unknown)
+    # Populated by _play_audio() from yt-dlp full extraction (may be "" for unofficial uploads)
+    artist: str = ""   # e.g. "BTS"  — more reliable than parsing title
+    track: str = ""    # e.g. "Dynamite"
+    channel: str = ""  # YouTube channel name, used as artist fallback
     # Stream URL is NOT stored here — it is fetched fresh in _play_audio()
     # so queued songs never hit 403 "stream URL expired" errors (~6 h TTL).
 

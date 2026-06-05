@@ -142,12 +142,18 @@ async def fetch_from_url(url: str, max_entries: int = 50) -> list[dict[str, Any]
     return await loop.run_in_executor(_executor, _fetch_url_sync, url, max_entries)
 
 
-async def get_stream_url(webpage_url: str, max_retries: int = 2) -> str:
-    """Extract a fresh audio stream URL for *webpage_url*.
+async def get_stream_url(webpage_url: str, max_retries: int = 2) -> dict[str, Any]:
+    """Extract a fresh audio stream URL and music metadata for *webpage_url*.
 
     Call this right before playback — YouTube stream URLs expire in ~6 hours.
     Retries up to *max_retries* times with exponential backoff (1 s, 1.5 s).
     Raises yt_dlp.utils.DownloadError after all attempts are exhausted.
+
+    Returns a dict with keys:
+        url     – audio stream URL
+        artist  – artist/performer (empty string if not available)
+        track   – song title from YouTube music metadata (empty if not available)
+        channel – YouTube channel name (useful as artist fallback)
     """
     loop = asyncio.get_event_loop()
     last_exc: Exception | None = None
@@ -353,10 +359,17 @@ def _stream_sync(webpage_url: str) -> str:
     n_audio  = len([f for f in info.get("formats", [])
                     if f.get("acodec") not in (None, "none")])
 
+    # Music metadata — available for official music videos / auto-generated uploads
+    artist  = (info.get("artist")  or info.get("creator") or "").strip()
+    track   = (info.get("track")   or "").strip()
+    channel = (info.get("channel") or info.get("uploader") or "").strip()
+
     log.info(
-        "yt-dlp [stream] OK  title=%r  format_id=%s  ext=%s  acodec=%s  "
+        "yt-dlp [stream] OK  title=%r  artist=%r  track=%r  "
+        "format_id=%s  ext=%s  acodec=%s  "
         "abr=%skbps  formats_total=%d  formats_with_audio=%d  elapsed=%.2fs",
-        info.get("title", "?"), fmt_id, fmt_ext, acodec,
+        info.get("title", "?"), artist, track,
+        fmt_id, fmt_ext, acodec,
         abr, n_fmts, n_audio, elapsed,
     )
 
@@ -368,7 +381,7 @@ def _stream_sync(webpage_url: str) -> str:
             [f.get("format_id") for f in info.get("formats", [])[:20]],
         )
 
-    return stream_url
+    return {"url": stream_url, "artist": artist, "track": track, "channel": channel}
 
 
 def _diagnose_formats(webpage_url: str, base_opts: dict) -> None:

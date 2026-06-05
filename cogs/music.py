@@ -66,7 +66,7 @@ class Music(commands.Cog):
 
         # Fetch a fresh stream URL right before playback
         try:
-            stream_url = await get_stream_url(song.webpage_url)
+            stream_info = await get_stream_url(song.webpage_url)
         except DownloadError as exc:
             log.error("Stream URL fetch failed for %r: %s", song.title, exc)
             ch = self._text_channels.get(guild.id)
@@ -82,8 +82,13 @@ class Music(commands.Cog):
             await self._play_next(guild)
             return
 
+        # Enrich Song with music metadata from full yt-dlp extraction
+        song.artist  = stream_info.get("artist", "")
+        song.track   = stream_info.get("track", "")
+        song.channel = stream_info.get("channel", "")
+
         queue = self._get_queue(guild.id)
-        source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
+        source = discord.FFmpegPCMAudio(stream_info["url"], **FFMPEG_OPTIONS)
         source = discord.PCMVolumeTransformer(source, volume=queue.volume)
 
         def _after(error: Optional[Exception]) -> None:

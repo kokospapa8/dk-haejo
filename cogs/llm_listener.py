@@ -21,6 +21,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
@@ -32,10 +33,111 @@ from discord.ext import commands
 
 from cogs.music import Music
 from utils import lastfm, user_tracks
+from utils.conv_memory import ConvMemory
 from utils.llm_tools import MUSIC_TOOLS
 from utils.youtube import fetch_from_url, search_youtube, search_youtube_multi
 
 log = logging.getLogger(__name__)
+
+# Keywords that trigger loading the full member memory instead of just recent 10
+_FULL_MEMORY_TRIGGERS = frozenset([
+    "기억 더", "더 기억", "기억 전체", "전체 기억", "기억 불러",
+    "모든 기억", "기억 다", "다 기억", "이전 대화 기억", "예전 대화",
+])
+
+
+def _wants_full_memory(text: str) -> bool:
+    tl = text.lower()
+    return any(kw in tl for kw in _FULL_MEMORY_TRIGGERS)
+
+
+# ── message intent pre-filter ─────────────────────────────────────────────────
+
+# Music-related keywords that almost certainly mean the message is a bot command
+_MUSIC_KW = frozenset([
+    # Korean
+    "틀어", "재생", "노래", "음악", "큐", "대기열", "플리", "플레이리스트",
+    "볼륨", "스킵", "다음곡", "멈춰", "정지", "이어", "추가해", "넣어줘",
+    "검색", "찾아줘", "추천", "가사", "반복", "셔플", "들어와", "나가줘",
+    "입장", "퇴장", "기록", "히스토리", "앨범", "아티스트",
+    # English
+    "play ", "skip", "stop", "pause", "resume", " queue", "volume",
+    "lyrics", "shuffle", "playlist", "history",
+])
+
+_BOT_NAMES = frozenset(["동쿠", "동큐"])
+
+_YT_RE    = re.compile(r"youtu\.?be|youtube\.com", re.I)
+# Custom emoji  <:name:id>  or animated  <a:name:id>
+_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
+# Reaction-only short messages that are never bot commands
+_REACTION_RE = re.compile(
+    r"^[\s\U0001F000-\U0010FFFF]*"       # leading whitespace / Unicode emoji
+    r"(ㅋ+|ㅎ+|ㅠ+|ㅜ+|ㄷ+|ㄱㄱ|ㄴㄴ|ㅇㅇ|ㅇㅋ|"
+    r"맞아|헐|어|아|오|우와|그래|알겠|고마|감사|"
+    r"ok|okay|lol|haha|wow|omg|gg)"
+    r"[!?~ㅋㅎ\s]*$",
+    re.I,
+)
+
+
+def _pre_filter(content: str, bot_user_id: int) -> bool | None:
+    """Quick rule-based filter run before any API call.
+
+    Returns:
+        True  – definitely a bot command → process immediately
+        False – definitely general chat → ignore
+        None  – ambiguous → fall through to LLM classification
+    """
+    stripped = content.strip()
+
+    # "!" prefix → user explicitly marked this as a human-to-human message
+    if stripped.startswith("!"):
+        return False
+
+    # Very short messages are almost always reactions, not commands
+    if len(stripped) <= 4:
+        return False
+
+    # Pure emoji / sticker (no real text left after stripping)
+    text_only = _EMOJI_RE.sub("", stripped).strip()
+    if not text_only:
+        return False
+
+    # Obvious reaction patterns
+    if _REACTION_RE.match(stripped):
+        return False
+
+    cl = stripped.lower()
+
+    # Bot name mention → always process
+    if any(name in stripped for name in _BOT_NAMES):
+        return True
+
+    # YouTube URL → always process
+    if _YT_RE.search(stripped):
+        return True
+
+    # Music keyword → process
+    if any(kw in cl for kw in _MUSIC_KW):
+        return True
+
+    # Message @-mentions another user (not the bot) → likely human conversation
+    other_mentions = re.findall(r"<@!?(\d+)>", stripped)
+    if other_mentions and not any(str(bot_user_id) == uid for uid in other_mentions):
+        return False
+
+    return None  # ambiguous → needs LLM classification
+
+
+# Haiku prompt for intent classification (kept tiny for speed + cost)
+_INTENT_SYSTEM = (
+    "너는 Discord 뮤직봇 채널에서 메시지를 분류하는 도구야. "
+    "메시지가 뮤직봇에게 보내는 명령이나 질문이면 'BOT', "
+    "사람들끼리 하는 일반 대화면 'IGNORE'로만 답해. "
+    "다른 말은 절대 하지 마."
+)
+
 
 # ── system prompt ─────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT = """
@@ -353,8 +455,13 @@ def _parse_yt_title(title: str) -> tuple[str, str]:
     return song or title, artist
 
 
-def _fetch_lyrics_sync(title: str) -> str | None:
-    """Search lrclib.net for lyrics. Tries multiple query strategies."""
+def _fetch_lyrics_sync(title: str, artist: str = "", track: str = "") -> str | None:
+    """Search lrclib.net for lyrics.
+
+    Uses yt-dlp music metadata (artist, track) when available — much more
+    reliable than parsing the YouTube title.  Falls back to title parsing
+    only when metadata is absent (unofficial uploads, covers, etc.).
+    """
     import json
 
     def _search(params: dict) -> str | None:
@@ -371,21 +478,32 @@ def _fetch_lyrics_sync(title: str) -> str | None:
             log.debug("lrclib fetch failed params=%s: %s", params, exc)
         return None
 
-    song, artist = _parse_yt_title(title)
+    # ── Tier 1: use yt-dlp metadata directly (most accurate) ─────────────────
+    if artist and track:
+        result = _search({"track_name": track, "artist_name": artist})
+        if result:
+            log.debug("lrclib hit via yt-dlp metadata: artist=%r track=%r", artist, track)
+            return result
 
-    # 1. artist + song name (most specific)
-    if artist:
-        result = _search({"track_name": song, "artist_name": artist})
+    if track:
+        result = _search({"q": track})
         if result:
             return result
 
-    # 2. song name only
-    result = _search({"q": song})
+    # ── Tier 2: fall back to parsing the YouTube title ────────────────────────
+    parsed_track, parsed_artist = _parse_yt_title(title)
+
+    if parsed_artist:
+        result = _search({"track_name": parsed_track, "artist_name": parsed_artist})
+        if result:
+            return result
+
+    result = _search({"q": parsed_track})
     if result:
         return result
 
-    # 3. full original title as fallback
-    if song != title:
+    # ── Tier 3: raw title as last resort ──────────────────────────────────────
+    if parsed_track != title:
         result = _search({"q": title})
         if result:
             return result
@@ -434,6 +552,30 @@ class LLMListener(commands.Cog):
         self._history_context: dict[int, dict] = {}
         # Same structure but for personal playlist selections.
         self._playlist_context: dict[int, dict] = {}
+        # Rolling conversation memory (channel history + per-member persistent)
+        self._conv_memory = ConvMemory()
+
+    # ── intent classification ─────────────────────────────────────────────────
+
+    async def _classify_intent(self, content: str) -> bool:
+        """Ask Haiku whether *content* is a bot command or general chat.
+
+        Returns True (process) or False (ignore).
+        Falls back to True on any API error so we never silently drop commands.
+        """
+        try:
+            resp = await self._anthropic.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                system=_INTENT_SYSTEM,
+                messages=[{"role": "user", "content": content}],
+            )
+            label = resp.content[0].text.strip().upper()
+            log.debug("intent classify %r → %s", content[:60], label)
+            return label.startswith("BOT")
+        except Exception as exc:
+            log.warning("intent classify failed (%s) – defaulting to process", exc)
+            return True
 
     # ── event listener ────────────────────────────────────────────────────────
 
@@ -461,6 +603,17 @@ class LLMListener(commands.Cog):
         if not content:
             await message.reply("무엇을 도와드릴까요? 🎵")
             return
+
+        # @mention → always process (user explicitly called the bot)
+        # music channel → run the intent filter first
+        if not mentioned:
+            decision = _pre_filter(content, self.bot.user.id)
+            if decision is False:
+                return  # rule says: ignore
+            if decision is None:
+                # Ambiguous — ask Haiku (~0.1 s, cheap)
+                if not await self._classify_intent(content):
+                    return
 
         async with message.channel.typing():
             reply = await self._handle_llm(message, content)
@@ -492,7 +645,18 @@ class LLMListener(commands.Cog):
             if current_song else user_text
         )
 
+        # ── conversation memory ───────────────────────────────────────────────
+        full_mem = _wants_full_memory(user_text)
+        member_block = self._conv_memory.get_member_system_block(
+            message.guild.id,
+            message.author.id,
+            message.author.display_name,
+            full=full_mem,
+        )
+
         # Build messages — inject search / history / playlist context when available.
+        # When active selection context exists, keep the focused 3-message pattern.
+        # Otherwise, inject channel conversation history for rolling context.
         search_ctx   = self._search_context.get(message.channel.id)
         hist_ctx     = self._history_context.get(message.channel.id)
         playlist_ctx = self._playlist_context.get(message.channel.id)
@@ -505,27 +669,32 @@ class LLMListener(commands.Cog):
                 {"role": "user", "content": enriched_text},
             ]
         else:
-            messages = [{"role": "user", "content": enriched_text}]
+            history  = self._conv_memory.get_channel_history(message.channel.id)
+            messages = history + [{"role": "user", "content": enriched_text}]
 
         kst = datetime.now(timezone(timedelta(hours=9)))
         now_str = kst.strftime("%Y년 %m월 %d일 %H시 %M분 (KST, %A)")
+
+        system: list[dict] = [
+            {
+                "type": "text",
+                "text": _SYSTEM_PROMPT,
+                # Cache the static system prompt to save API cost
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": f"현재 날짜·시간: {now_str}",
+            },
+        ]
+        if member_block:
+            system.append({"type": "text", "text": member_block})
 
         try:
             response = await self._anthropic.messages.create(
                 model=self._model,
                 max_tokens=1024,
-                system=[
-                    {
-                        "type": "text",
-                        "text": _SYSTEM_PROMPT,
-                        # Cache the static system prompt to save API cost
-                        "cache_control": {"type": "ephemeral"},
-                    },
-                    {
-                        "type": "text",
-                        "text": f"현재 날짜·시간: {now_str}",
-                    },
-                ],
+                system=system,
                 tools=MUSIC_TOOLS,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
             )
@@ -541,7 +710,10 @@ class LLMListener(commands.Cog):
             text_block = next(
                 (b for b in response.content if b.type == "text"), None
             )
-            return text_block.text if text_block else None
+            reply_text = text_block.text if text_block else None
+            if reply_text:
+                self._record_exchange(message, user_text, reply_text)
+            return reply_text
 
         # Clear selection contexts for any unrelated tool call.
         tool_names = {tb.name for tb in tool_blocks}
@@ -753,7 +925,10 @@ class LLMListener(commands.Cog):
             return "⚠️ 현재 재생 중인 곡이 없습니다."
 
         loop = asyncio.get_running_loop()
-        lyrics = await loop.run_in_executor(None, _fetch_lyrics_sync, song.title)
+        lyrics = await loop.run_in_executor(
+            None, _fetch_lyrics_sync, song.title,
+            getattr(song, "artist", ""), getattr(song, "track", ""),
+        )
 
         if not lyrics:
             return f"❌ **{song.title}** 의 가사를 찾을 수 없습니다."
