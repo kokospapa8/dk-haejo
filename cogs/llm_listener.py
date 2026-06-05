@@ -726,7 +726,7 @@ class LLMListener(commands.Cog):
         async with message.channel.typing():
             reply = await self._handle_llm(message, content)
 
-        if reply is None:
+        if not reply:
             return
 
         if isinstance(reply, discord.Embed):
@@ -818,9 +818,14 @@ class LLMListener(commands.Cog):
             text_block = next(
                 (b for b in response.content if b.type == "text"), None
             )
-            reply_text = text_block.text if text_block else None
-            if reply_text:
-                self._record_exchange(message, user_text, reply_text)
+            reply_text = text_block.text.strip() if text_block else None
+            if not reply_text:
+                log.warning(
+                    "_handle_llm: Claude returned empty/no text (stop_reason=%s) for %r",
+                    response.stop_reason, user_text[:80],
+                )
+                return None
+            self._record_exchange(message, user_text, reply_text)
             return reply_text
 
         # Clear selection contexts for any unrelated tool call.
@@ -1386,7 +1391,7 @@ class LLMListener(commands.Cog):
                 panel_cog = self.bot.cogs.get("MusicPanel")
                 if panel_cog:
                     await panel_cog.refresh(guild, force_repost=True)
-                return None
+                return ""
 
             case _:
                 log.warning("Unknown tool name: %s", tool_name)
