@@ -65,9 +65,24 @@ touch "$REPO/cookies.txt"
 # data 디렉토리 사전 생성 (bind mount 전 존재해야 queue/history 저장 가능)
 mkdir -p "$REPO/data"
 
+# .env에서 Discord 웹훅 URL 읽기
+DISCORD_DEPLOY_WEBHOOK=""
+if [ -f "$REPO/.env" ]; then
+  DISCORD_DEPLOY_WEBHOOK=$(grep -E '^DISCORD_DEPLOY_WEBHOOK=' "$REPO/.env" | cut -d= -f2- | tr -d '\r')
+fi
+
+notify_discord() {
+  [ -n "$DISCORD_DEPLOY_WEBHOOK" ] || return 0
+  curl -s -X POST "$DISCORD_DEPLOY_WEBHOOK" \
+    -H "Content-Type: application/json" \
+    -d "{\"content\": \"$1\"}" || true
+}
+
+notify_discord "🔄 **배포 시작** — 잠시 후 봇이 재시작됩니다..."
 docker compose down --remove-orphans || true
 docker compose build --no-cache
 docker compose up -d
 docker image prune -f
 
+notify_discord "✅ **배포 완료** — 봇이 다시 온라인 상태입니다!"
 echo "✅ 배포 완료: $(date)"
