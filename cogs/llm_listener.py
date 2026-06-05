@@ -436,9 +436,11 @@ def _parse_yt_title(title: str) -> tuple[str, str]:
         return s.strip()
 
     def _strip_tags(s: str) -> str:
-        """Remove common YouTube suffixes like [MV], (Official Video), 4K, etc."""
+        """Remove common YouTube suffixes like [MV], (Official Video), 4K, 가사 etc."""
+        # Strip slash-separated suffixes: "봄 내음보다 너를 / 가사", "title / lyrics"
+        s = re.sub(r'\s*/\s*(가사|lyrics?|MV|Official.*?)(\s*$)', '', s, flags=re.IGNORECASE)
         s = re.sub(
-            r'\s*[\[\(]?\s*(?:official\s*(?:mv|video|audio|lyric[s]?)|mv|lyric[s]?|'
+            r'\s*[\[\(]?\s*(?:official\s*(?:mv|video|audio|lyric[s]?)|mv|lyric[s]?|가사|'
             r'4k|hd|live|performance|visualizer|color\s*coded)\s*[\]\)]?',
             '', s, flags=re.IGNORECASE,
         )
