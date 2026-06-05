@@ -604,16 +604,9 @@ class LLMListener(commands.Cog):
             await message.reply("무엇을 도와드릴까요? 🎵")
             return
 
-        # @mention → always process (user explicitly called the bot)
-        # music channel → run the intent filter first
-        if not mentioned:
-            decision = _pre_filter(content, self.bot.user.id)
-            if decision is False:
-                return  # rule says: ignore
-            if decision is None:
-                # Ambiguous — ask Haiku (~0.1 s, cheap)
-                if not await self._classify_intent(content):
-                    return
+        # "!" 접두사 → 사람끼리 대화 표시, 봇 무시
+        if content.startswith("!"):
+            return
 
         async with message.channel.typing():
             reply = await self._handle_llm(message, content)
