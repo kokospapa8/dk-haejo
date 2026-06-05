@@ -42,9 +42,12 @@ class QueueSaver(commands.Cog):
             return
         queue = music._get_queue(guild.id)  # type: ignore[union-attr]
         ch: Optional[discord.TextChannel] = music._text_channels.get(guild.id)  # type: ignore[union-attr]
+        vc = guild.voice_client
+        vc_id = vc.channel.id if (vc and vc.channel) else None
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
-            None, queue_persist.save, guild.id, queue, ch.id if ch else None
+            None, queue_persist.save, guild.id, queue,
+            ch.id if ch else None, vc_id,
         )
 
     # ── restore on startup ───────────────────────────────────────────────────
@@ -95,11 +98,40 @@ class QueueSaver(commands.Cog):
         log.info("queue_saver: restored %d songs for guild %s", len(songs), guild.id)
 
         ch = self._resolve_channel(guild, state.get("text_channel_id"))
+
+        # ── auto-reconnect to voice channel and resume playback ───────────────
+        vc_id = state.get("voice_channel_id")
+        auto_playing = False
+        if vc_id:
+            vc_channel = guild.get_channel(vc_id)
+            if isinstance(vc_channel, discord.VoiceChannel):
+                try:
+                    await vc_channel.connect()
+                    # Register the text channel so _play_audio can send messages
+                    if ch:
+                        music._text_channels[guild.id] = ch  # type: ignore[union-attr]
+                    await asyncio.sleep(1)   # let the voice connection stabilise
+                    await music._play_next(guild)  # type: ignore[union-attr]
+                    auto_playing = True
+                    log.info(
+                        "queue_saver: auto-resumed playback in #%s (guild %s)",
+                        vc_channel.name, guild.id,
+                    )
+                except Exception as exc:
+                    log.warning("queue_saver: auto-reconnect failed for guild %s: %s", guild.id, exc)
+
         if ch:
-            await ch.send(
-                f"🔄 재시작 후 이전 대기열 **{len(songs)}곡**을 복구했습니다.\n"
-                f"재생하려면 **'틀어줘'** 또는 **'play'** 라고 해주세요!"
-            )
+            if auto_playing:
+                first = songs[0].title if songs else "?"
+                await ch.send(
+                    f"🔄 재시작 후 **{len(songs)}곡** 복구 — "
+                    f"▶️ **{first}** 재생을 재개합니다."
+                )
+            else:
+                await ch.send(
+                    f"🔄 재시작 후 이전 대기열 **{len(songs)}곡**을 복구했습니다.\n"
+                    f"재생하려면 **'틀어줘'** 또는 **'play'** 라고 해주세요!"
+                )
 
     def _resolve_channel(
         self, guild: discord.Guild, saved_ch_id: int | None

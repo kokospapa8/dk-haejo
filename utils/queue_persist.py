@@ -64,7 +64,12 @@ def _song_to_dict(song: Any) -> dict:
     }
 
 
-def save(guild_id: int, queue: Any, text_channel_id: int | None = None) -> None:
+def save(
+    guild_id: int,
+    queue: Any,
+    text_channel_id: int | None = None,
+    voice_channel_id: int | None = None,
+) -> None:
     """Persist current + upcoming songs for a guild."""
     songs: list[dict] = []
     if queue.current:
@@ -80,6 +85,8 @@ def save(guild_id: int, queue: Any, text_channel_id: int | None = None) -> None:
     }
     if text_channel_id:
         entry["text_channel_id"] = text_channel_id
+    if voice_channel_id:
+        entry["voice_channel_id"] = voice_channel_id
 
     if songs:
         data[str(guild_id)] = entry
