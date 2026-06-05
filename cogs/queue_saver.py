@@ -118,7 +118,7 @@ class QueueSaver(commands.Cog):
             if isinstance(vc_channel, discord.VoiceChannel):
                 try:
                     log.info("queue_saver [restore] connecting to #%s …", vc_channel.name)
-                    await vc_channel.connect()
+                    await vc_channel.connect(self_deaf=True)
                     log.info("queue_saver [restore] connected  guild_vc=%s", guild.voice_client)
                     # Register the text channel so _play_audio can send messages
                     if ch:
